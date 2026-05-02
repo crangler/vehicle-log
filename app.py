@@ -7,10 +7,10 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QDialog, QFormLayout, QLineEdit,
     QSpinBox, QDoubleSpinBox, QTextEdit, QDialogButtonBox, QStatusBar,
     QMessageBox, QHeaderView, QTabWidget, QLabel, QComboBox, QPushButton,
-    QDateEdit,
+    QDateEdit, QRadioButton, QButtonGroup, QGroupBox,
 )
 from PySide6.QtCore import Qt, QDate, QSettings, QUrl
-from PySide6.QtGui import QAction, QColor, QBrush, QPalette, QDesktopServices
+from PySide6.QtGui import QColor, QBrush, QPalette, QDesktopServices
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -21,6 +21,19 @@ def add_months(d: date, months: int) -> date:
     month = month % 12 + 1
     day   = min(d.day, calendar.monthrange(year, month)[1])
     return date(year, month, day)
+
+
+KM_PER_MI = 1.60934
+
+def km_to_unit(km, unit: str) -> int:
+    if km is None:
+        return 0
+    return round(km / KM_PER_MI) if unit == "mi" else round(km)
+
+def unit_to_km(val, unit: str) -> int:
+    if val is None:
+        return 0
+    return round(val * KM_PER_MI) if unit == "mi" else round(val)
 
 
 # ── default maintenance schedule ───────────────────────────────────────────
@@ -52,7 +65,9 @@ class DatabaseManager:
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
         self._create_tables()
-        self._seed_maintenance_items()
+        self._migrate_per_vehicle_items()
+        for v in self.conn.execute("SELECT id FROM vehicles"):
+            self._seed_vehicle_maintenance_items(v["id"])
 
     def _create_tables(self):
         self.conn.executescript("""
@@ -73,6 +88,7 @@ class DatabaseManager:
 
             CREATE TABLE IF NOT EXISTS maintenance_items (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                vehicle_id      INTEGER REFERENCES vehicles(id) ON DELETE CASCADE,
                 name            TEXT NOT NULL,
                 interval_miles  INTEGER,
                 interval_months INTEGER,
@@ -104,24 +120,53 @@ class DatabaseManager:
         """)
         self.conn.commit()
 
-    def _seed_maintenance_items(self):
-        if self.conn.execute("SELECT COUNT(*) FROM maintenance_items").fetchone()[0] == 0:
+    def _migrate_per_vehicle_items(self):
+        cols = {row[1] for row in self.conn.execute("PRAGMA table_info(maintenance_items)")}
+        if "vehicle_id" in cols:
+            return
+        self.conn.execute(
+            "ALTER TABLE maintenance_items ADD COLUMN vehicle_id INTEGER REFERENCES vehicles(id) ON DELETE CASCADE"
+        )
+        global_items = self.conn.execute(
+            "SELECT * FROM maintenance_items WHERE vehicle_id IS NULL"
+        ).fetchall()
+        vehicles = self.conn.execute("SELECT id FROM vehicles").fetchall()
+        id_map = {}
+        for item in global_items:
+            for v in vehicles:
+                cur = self.conn.execute(
+                    "INSERT INTO maintenance_items (vehicle_id, name, interval_miles, interval_months, sort_order) VALUES (?,?,?,?,?)",
+                    (v["id"], item["name"], item["interval_miles"], item["interval_months"], item["sort_order"]),
+                )
+                id_map[(item["id"], v["id"])] = cur.lastrowid
+        for entry in self.conn.execute("SELECT id, vehicle_id, item_id FROM service_log").fetchall():
+            new_id = id_map.get((entry["item_id"], entry["vehicle_id"]))
+            if new_id:
+                self.conn.execute("UPDATE service_log SET item_id=? WHERE id=?", (new_id, entry["id"]))
+        self.conn.execute("DELETE FROM maintenance_items WHERE vehicle_id IS NULL")
+        self.conn.commit()
+
+    def _seed_vehicle_maintenance_items(self, vehicle_id):
+        if self.conn.execute(
+            "SELECT COUNT(*) FROM maintenance_items WHERE vehicle_id=?", (vehicle_id,)
+        ).fetchone()[0] == 0:
             self.conn.executemany(
-                "INSERT INTO maintenance_items (name, interval_miles, interval_months, sort_order) VALUES (?,?,?,?)",
-                DEFAULT_ITEMS,
+                "INSERT INTO maintenance_items (vehicle_id, name, interval_miles, interval_months, sort_order) VALUES (?,?,?,?,?)",
+                [(vehicle_id, name, dist, months, order) for name, dist, months, order in DEFAULT_ITEMS],
             )
             self.conn.commit()
 
     # vehicles
 
     def add_vehicle(self, data):
-        self.conn.execute("""
+        cur = self.conn.execute("""
             INSERT INTO vehicles
                 (nickname, year, make, model, trim, color, vin, license_plate, current_mileage, notes)
             VALUES
                 (:nickname, :year, :make, :model, :trim, :color, :vin, :license_plate, :current_mileage, :notes)
         """, data)
         self.conn.commit()
+        self._seed_vehicle_maintenance_items(cur.lastrowid)
 
     def update_vehicle(self, vehicle_id, data):
         self.conn.execute("""
@@ -149,19 +194,21 @@ class DatabaseManager:
 
     # maintenance items
 
-    def get_maintenance_items(self):
+    def get_maintenance_items(self, vehicle_id):
         return self.conn.execute(
-            "SELECT * FROM maintenance_items ORDER BY sort_order, name"
+            "SELECT * FROM maintenance_items WHERE vehicle_id=? ORDER BY sort_order, name",
+            (vehicle_id,),
         ).fetchall()
 
-    def add_maintenance_item(self, data):
+    def add_maintenance_item(self, vehicle_id, data):
         max_order = self.conn.execute(
-            "SELECT COALESCE(MAX(sort_order), 0) FROM maintenance_items"
+            "SELECT COALESCE(MAX(sort_order), 0) FROM maintenance_items WHERE vehicle_id=?",
+            (vehicle_id,),
         ).fetchone()[0]
         self.conn.execute(
-            """INSERT INTO maintenance_items (name, interval_miles, interval_months, sort_order)
-               VALUES (:name, :interval_miles, :interval_months, :sort_order)""",
-            {**data, "sort_order": max_order + 1},
+            """INSERT INTO maintenance_items (vehicle_id, name, interval_miles, interval_months, sort_order)
+               VALUES (:vehicle_id, :name, :interval_miles, :interval_months, :sort_order)""",
+            {**data, "vehicle_id": vehicle_id, "sort_order": max_order + 1},
         )
         self.conn.commit()
 
@@ -224,7 +271,7 @@ class DatabaseManager:
 
     def get_schedule(self, vehicle_id):
         vehicle = self.get_vehicle(vehicle_id)
-        items   = self.get_maintenance_items()
+        items   = self.get_maintenance_items(vehicle_id)
         result  = []
         for item in items:
             last = self.conn.execute("""
@@ -346,6 +393,7 @@ class VehicleDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Edit Vehicle" if vehicle else "Add Vehicle")
         self.setMinimumWidth(420)
+        self._unit = unit
         self._build_ui(vehicle, unit)
 
     def _build_ui(self, v, unit):
@@ -367,7 +415,7 @@ class VehicleDialog(QDialog):
         self.current_mileage = QSpinBox()
         self.current_mileage.setRange(0, 9_999_999)
         self.current_mileage.setSingleStep(100)
-        self.current_mileage.setValue(v["current_mileage"] if v else 0)
+        self.current_mileage.setValue(km_to_unit(v["current_mileage"], unit) if v else 0)
         self.notes           = QTextEdit(val("notes"))
         self.notes.setFixedHeight(70)
 
@@ -408,19 +456,22 @@ class VehicleDialog(QDialog):
             "color":           self.color.text().strip() or None,
             "vin":             self.vin.text().strip() or None,
             "license_plate":   self.license_plate.text().strip() or None,
-            "current_mileage": self.current_mileage.value(),
+            "current_mileage": unit_to_km(self.current_mileage.value(), self._unit),
             "notes":           self.notes.toPlainText().strip() or None,
         }
 
 
 class LogServiceDialog(QDialog):
-    def __init__(self, parent, vehicles, items, *, vehicle_id=None, item_id=None, unit="km"):
+    def __init__(self, parent, db, vehicles, *, vehicle_id=None, item_id=None, unit="km"):
         super().__init__(parent)
         self.setWindowTitle("Log Service")
         self.setMinimumWidth(420)
-        self._build_ui(vehicles, items, vehicle_id, item_id, unit)
+        self._db   = db
+        self._unit = unit
+        self._preferred_item_id = item_id
+        self._build_ui(vehicles, vehicle_id, unit)
 
-    def _build_ui(self, vehicles, items, vehicle_id, item_id, unit):
+    def _build_ui(self, vehicles, vehicle_id, unit):
         layout = QFormLayout(self)
 
         self.vehicle_combo = QComboBox()
@@ -433,12 +484,8 @@ class LogServiceDialog(QDialog):
             self.vehicle_combo.setCurrentIndex(idx)
 
         self.item_combo = QComboBox()
-        for it in items:
-            self.item_combo.addItem(it["name"], it["id"])
-        if item_id is not None:
-            idx = next((i for i in range(self.item_combo.count())
-                        if self.item_combo.itemData(i) == item_id), 0)
-            self.item_combo.setCurrentIndex(idx)
+        self.vehicle_combo.currentIndexChanged.connect(self._refresh_items)
+        self._refresh_items()
 
         self.service_date = QDateEdit(QDate.currentDate())
         self.service_date.setCalendarPopup(True)
@@ -477,12 +524,25 @@ class LogServiceDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addRow(buttons)
 
+    def _refresh_items(self):
+        vid = self.vehicle_combo.currentData()
+        items = self._db.get_maintenance_items(vid) if vid is not None else []
+        self.item_combo.clear()
+        for it in items:
+            self.item_combo.addItem(it["name"], it["id"])
+        if self._preferred_item_id is not None:
+            idx = next((i for i in range(self.item_combo.count())
+                        if self.item_combo.itemData(i) == self._preferred_item_id), -1)
+            if idx >= 0:
+                self.item_combo.setCurrentIndex(idx)
+            self._preferred_item_id = None
+
     def get_data(self):
         return {
             "vehicle_id":         self.vehicle_combo.currentData(),
             "item_id":            self.item_combo.currentData(),
             "service_date":       self.service_date.date().toString("yyyy-MM-dd"),
-            "mileage_at_service": self.mileage.value() or None,
+            "mileage_at_service": unit_to_km(self.mileage.value(), self._unit) or None,
             "cost":               self.cost.value() or None,
             "shop":               self.shop.text().strip() or None,
             "parts":              self.parts.toPlainText().strip() or None,
@@ -495,6 +555,7 @@ class MaintenanceItemDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Edit Service" if item else "Add Service")
         self.setMinimumWidth(380)
+        self._unit = unit
         self._build_ui(item, unit)
 
     def _build_ui(self, item, unit):
@@ -506,7 +567,7 @@ class MaintenanceItemDialog(QDialog):
         self.interval_dist.setRange(0, 999_999)
         self.interval_dist.setSingleStep(500)
         self.interval_dist.setSpecialValueText("None")
-        self.interval_dist.setValue(item["interval_miles"] or 0 if item else 0)
+        self.interval_dist.setValue(km_to_unit(item["interval_miles"], unit) if item and item["interval_miles"] else 0)
 
         self.interval_months = QSpinBox()
         self.interval_months.setRange(0, 120)
@@ -536,7 +597,7 @@ class MaintenanceItemDialog(QDialog):
     def get_data(self):
         return {
             "name":            self.name.text().strip(),
-            "interval_miles":  self.interval_dist.value() or None,
+            "interval_miles":  unit_to_km(self.interval_dist.value(), self._unit) or None,
             "interval_months": self.interval_months.value() or None,
         }
 
@@ -596,7 +657,7 @@ class GarageTab(QWidget):
             cells = [
                 display_name, str(v["year"]), v["make"], v["model"],
                 v["trim"] or "", v["color"] or "", v["license_plate"] or "",
-                f"{v['current_mileage']:,}", v["date_added"],
+                f"{km_to_unit(v['current_mileage'], unit):,}", v["date_added"],
             ]
             for col, text in enumerate(cells):
                 item = QTableWidgetItem(text)
@@ -695,7 +756,7 @@ class ScheduleTab(QWidget):
         vehicle = self.db.get_vehicle(self._vehicle_id)
         name    = vehicle["nickname"] or f"{vehicle['year']} {vehicle['make']} {vehicle['model']}"
         self.vehicle_label.setText(
-            f"<b>{name}</b> &nbsp;·&nbsp; Odometer: {vehicle['current_mileage']:,} {unit}"
+            f"<b>{name}</b> &nbsp;·&nbsp; Odometer: {km_to_unit(vehicle['current_mileage'], unit):,} {unit}"
         )
         self.log_btn.setEnabled(True)
 
@@ -706,7 +767,7 @@ class ScheduleTab(QWidget):
         for row, (item, last, v) in enumerate(rows):
             interval_parts = []
             if item["interval_miles"]:
-                interval_parts.append(f"{item['interval_miles']:,} {unit}")
+                interval_parts.append(f"{km_to_unit(item['interval_miles'], unit):,} {unit}")
             if item["interval_months"]:
                 interval_parts.append(f"{item['interval_months']} mo")
             interval_str = " / ".join(interval_parts) if interval_parts else "—"
@@ -714,8 +775,8 @@ class ScheduleTab(QWidget):
             status, next_dist, next_date = compute_status(item, last, v)
 
             last_done     = last["service_date"] if last else "Never"
-            at_dist       = f"{last['mileage_at_service']:,}" if last and last["mileage_at_service"] else "—"
-            next_dist_str = f"{next_dist:,}" if next_dist is not None else "—"
+            at_dist       = f"{km_to_unit(last['mileage_at_service'], unit):,}" if last and last["mileage_at_service"] else "—"
+            next_dist_str = f"{km_to_unit(next_dist, unit):,}" if next_dist is not None else "—"
             next_date_str = next_date.isoformat() if next_date else "—"
 
             color = STATUS_COLORS[status]
@@ -736,8 +797,8 @@ class ScheduleTab(QWidget):
     def _log_service(self):
         dlg = LogServiceDialog(
             self,
+            self.db,
             self.db.get_all_vehicles(),
-            self.db.get_maintenance_items(),
             vehicle_id=self._vehicle_id,
             item_id=self._selected_item_id(),
             unit=self.get_unit(),
@@ -752,9 +813,10 @@ class ScheduleTab(QWidget):
 class ServicesTab(QWidget):
     def __init__(self, db: DatabaseManager, get_unit):
         super().__init__()
-        self.db       = db
-        self.get_unit = get_unit
-        self._item_ids: list[int] = []
+        self.db          = db
+        self.get_unit    = get_unit
+        self._vehicle_id: int | None = None
+        self._item_ids:   list[int]  = []
         self._build_ui()
         self.refresh()
 
@@ -762,7 +824,10 @@ class ServicesTab(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
 
-        btn_row = QHBoxLayout()
+        top_row = QHBoxLayout()
+        self.vehicle_label = QLabel("Select a vehicle in the Garage tab to manage its services.")
+        top_row.addWidget(self.vehicle_label)
+        top_row.addStretch()
         for label, slot in [
             ("Add Service", self._add_item),
             ("Edit",        self._edit_item),
@@ -770,9 +835,8 @@ class ServicesTab(QWidget):
         ]:
             btn = QPushButton(label)
             btn.clicked.connect(slot)
-            btn_row.addWidget(btn)
-        btn_row.addStretch()
-        layout.addLayout(btn_row)
+            top_row.addWidget(btn)
+        layout.addLayout(top_row)
 
         self.table = QTableWidget()
         self.table.setColumnCount(3)
@@ -784,18 +848,32 @@ class ServicesTab(QWidget):
         self.table.doubleClicked.connect(self._edit_item)
         layout.addWidget(self.table)
 
+    def set_vehicle(self, vehicle_id: int | None):
+        self._vehicle_id = vehicle_id
+        self.refresh()
+
     def refresh(self):
         unit = self.get_unit()
         self.table.setHorizontalHeaderLabels([
             "Service Name", f"Distance Interval ({unit})", "Time Interval (months)",
         ])
 
-        items          = self.db.get_maintenance_items()
+        if self._vehicle_id is None:
+            self.table.setRowCount(0)
+            self._item_ids = []
+            self.vehicle_label.setText("Select a vehicle in the Garage tab to manage its services.")
+            return
+
+        vehicle = self.db.get_vehicle(self._vehicle_id)
+        name    = vehicle["nickname"] or f"{vehicle['year']} {vehicle['make']} {vehicle['model']}"
+        self.vehicle_label.setText(f"<b>{name}</b>")
+
+        items          = self.db.get_maintenance_items(self._vehicle_id)
         self._item_ids = [item["id"] for item in items]
         self.table.setRowCount(len(items))
 
         for row, item in enumerate(items):
-            dist_str  = f"{item['interval_miles']:,}" if item["interval_miles"]  else "—"
+            dist_str  = f"{km_to_unit(item['interval_miles'], unit):,}" if item["interval_miles"] else "—"
             month_str = str(item["interval_months"])  if item["interval_months"] else "—"
             for col, text in enumerate([item["name"], dist_str, month_str]):
                 cell = QTableWidgetItem(text)
@@ -808,16 +886,18 @@ class ServicesTab(QWidget):
         return self._item_ids[row] if row >= 0 else None
 
     def _add_item(self):
+        if self._vehicle_id is None:
+            return
         dlg = MaintenanceItemDialog(self, unit=self.get_unit())
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            self.db.add_maintenance_item(dlg.get_data())
+            self.db.add_maintenance_item(self._vehicle_id, dlg.get_data())
             self.refresh()
 
     def _edit_item(self):
         iid = self._selected_id()
         if iid is None:
             return
-        items = {item["id"]: item for item in self.db.get_maintenance_items()}
+        items = {item["id"]: item for item in self.db.get_maintenance_items(self._vehicle_id)}
         dlg = MaintenanceItemDialog(self, items[iid], unit=self.get_unit())
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self.db.update_maintenance_item(iid, dlg.get_data())
@@ -827,8 +907,8 @@ class ServicesTab(QWidget):
         iid = self._selected_id()
         if iid is None:
             return
-        items    = {item["id"]: item for item in self.db.get_maintenance_items()}
-        name     = items[iid]["name"]
+        items     = {item["id"]: item for item in self.db.get_maintenance_items(self._vehicle_id)}
+        name      = items[iid]["name"]
         log_count = self.db.get_service_log_count_for_item(iid)
 
         msg = f"Delete '{name}'?"
@@ -1047,6 +1127,61 @@ class PartsTab(QWidget):
             QMessageBox.information(self, "No URL", "No URL saved for this part.")
 
 
+# ── settings tab ─────────────────────────────────────────────────────────────
+
+class SettingsTab(QWidget):
+    def __init__(self, apply_theme, apply_unit, current_theme, current_unit):
+        super().__init__()
+        self._apply_theme = apply_theme
+        self._apply_unit  = apply_unit
+        self._build_ui(current_theme, current_unit)
+
+    def _build_ui(self, current_theme, current_unit):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 20, 20, 20)
+        outer.setSpacing(16)
+
+        # Theme
+        theme_box    = QGroupBox("Theme")
+        theme_layout = QVBoxLayout(theme_box)
+        self._dark_btn  = QRadioButton("Dark")
+        self._light_btn = QRadioButton("Light")
+        self._theme_grp = QButtonGroup(self)
+        self._theme_grp.addButton(self._dark_btn,  0)
+        self._theme_grp.addButton(self._light_btn, 1)
+        theme_layout.addWidget(self._dark_btn)
+        theme_layout.addWidget(self._light_btn)
+        (self._dark_btn if current_theme == "dark" else self._light_btn).setChecked(True)
+        self._theme_grp.idClicked.connect(
+            lambda bid: self._apply_theme("dark" if bid == 0 else "light")
+        )
+        outer.addWidget(theme_box)
+
+        # Unit
+        unit_box    = QGroupBox("Distance Unit")
+        unit_layout = QVBoxLayout(unit_box)
+        self._km_btn = QRadioButton("Kilometers (km)")
+        self._mi_btn = QRadioButton("Miles (mi)")
+        self._unit_grp = QButtonGroup(self)
+        self._unit_grp.addButton(self._km_btn, 0)
+        self._unit_grp.addButton(self._mi_btn, 1)
+        unit_layout.addWidget(self._km_btn)
+        unit_layout.addWidget(self._mi_btn)
+        (self._km_btn if current_unit == "km" else self._mi_btn).setChecked(True)
+        self._unit_grp.idClicked.connect(
+            lambda bid: self._apply_unit("km" if bid == 0 else "mi")
+        )
+        outer.addWidget(unit_box)
+
+        outer.addStretch()
+
+    def sync_theme(self, theme: str):
+        (self._dark_btn if theme == "dark" else self._light_btn).setChecked(True)
+
+    def sync_unit(self, unit: str):
+        (self._km_btn if unit == "km" else self._mi_btn).setChecked(True)
+
+
 # ── main window ──────────────────────────────────────────────────────────────
 
 class VehicleApp(QMainWindow):
@@ -1070,48 +1205,37 @@ class VehicleApp(QMainWindow):
         self.schedule_tab  = ScheduleTab(self.db, lambda: self.unit)
         self.services_tab  = ServicesTab(self.db, lambda: self.unit)
         self.parts_tab     = PartsTab(self.db)
-        self.tabs.addTab(self.garage_tab,   "Garage")
-        self.tabs.addTab(self.schedule_tab, "Schedule")
-        self.tabs.addTab(self.services_tab, "Services")
-        self.tabs.addTab(self.parts_tab,    "Parts")
+        self.settings_tab  = SettingsTab(
+            self._apply_theme, self._apply_unit,
+            current_theme=self.settings.value("theme", "dark"),
+            current_unit=self.settings.value("unit", "km"),
+        )
+        self.tabs.addTab(self.garage_tab,    "Garage")
+        self.tabs.addTab(self.schedule_tab,  "Schedule")
+        self.tabs.addTab(self.services_tab,  "Services")
+        self.tabs.addTab(self.parts_tab,     "Parts")
+        self.tabs.addTab(self.settings_tab,  "Settings")
         self.setCentralWidget(self.tabs)
 
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self._update_status()
-        self._build_menu()
-
-    def _build_menu(self):
-        view_menu = self.menuBar().addMenu("View")
-
-        self._dark_action = QAction("Dark Theme", self, checkable=True)
-        self._dark_action.triggered.connect(
-            lambda checked: self._apply_theme("dark" if checked else "light")
-        )
-        view_menu.addAction(self._dark_action)
-
-        view_menu.addSeparator()
-
-        self._km_action = QAction("Kilometers", self, checkable=True)
-        self._km_action.triggered.connect(
-            lambda checked: self._apply_unit("km" if checked else "mi")
-        )
-        view_menu.addAction(self._km_action)
 
     def _apply_theme(self, theme: str):
         QApplication.instance().setPalette(dark_palette() if theme == "dark" else light_palette())
         self.settings.setValue("theme", theme)
-        self._dark_action.setChecked(theme == "dark")
+        self.settings_tab.sync_theme(theme)
 
     def _apply_unit(self, unit: str):
         self.settings.setValue("unit", unit)
-        self._km_action.setChecked(unit == "km")
+        self.settings_tab.sync_unit(unit)
         self.garage_tab.refresh()
         self.schedule_tab.refresh()
         self.services_tab.refresh()
 
     def _on_vehicle_selected(self, vehicle_id: int | None):
         self.schedule_tab.set_vehicle(vehicle_id)
+        self.services_tab.set_vehicle(vehicle_id)
         self.parts_tab.refresh()
         self._update_status()
 
