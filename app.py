@@ -10,9 +10,9 @@ from PySide6.QtWidgets import (
     QSpinBox, QDoubleSpinBox, QTextEdit, QDialogButtonBox, QStatusBar,
     QMessageBox, QHeaderView, QTabWidget, QLabel, QComboBox, QPushButton,
     QDateEdit, QRadioButton, QButtonGroup, QGroupBox, QFileDialog,
-    QListWidget, QListWidgetItem,
+    QListWidget, QListWidgetItem, QScrollArea,
 )
-from PySide6.QtCore import Qt, QDate, QSettings, QSize, QUrl
+from PySide6.QtCore import Qt, QDate, QEvent, QSettings, QSize, QUrl
 from PySide6.QtGui import QColor, QBrush, QPalette, QDesktopServices, QPixmap, QIcon
 
 
@@ -628,6 +628,158 @@ class MaintenanceItemDialog(QDialog):
         }
 
 
+# ── image viewer ─────────────────────────────────────────────────────────────
+
+class ImageViewerDialog(QDialog):
+    _ZOOM_STEP = 1.25
+
+    def __init__(self, parent, paths: list[str], index: int = 0):
+        super().__init__(parent)
+        self._paths = paths
+        self._index = index
+        self._pixmap = QPixmap()
+        self._scale  = 1.0
+        self._fit    = True
+        self._build_ui()
+        self.resize(900, 650)
+        self._load_image()
+
+    def _build_ui(self):
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+
+        self._scroll = QScrollArea()
+        self._scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._scroll.setWidgetResizable(False)
+        self._scroll.viewport().installEventFilter(self)
+        self._img_label = QLabel()
+        self._img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._scroll.setWidget(self._img_label)
+        layout.addWidget(self._scroll)
+
+        bar = QHBoxLayout()
+        self._prev_btn = QPushButton("◀ Prev")
+        self._prev_btn.clicked.connect(self._prev)
+        self._next_btn = QPushButton("Next ▶")
+        self._next_btn.clicked.connect(self._next)
+        bar.addWidget(self._prev_btn)
+        bar.addWidget(self._next_btn)
+        bar.addStretch()
+
+        zoom_out = QPushButton("−")
+        zoom_out.setFixedWidth(28)
+        zoom_out.clicked.connect(self._zoom_out)
+        self._zoom_label = QLabel("100%")
+        self._zoom_label.setFixedWidth(52)
+        self._zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        zoom_in = QPushButton("+")
+        zoom_in.setFixedWidth(28)
+        zoom_in.clicked.connect(self._zoom_in)
+        self._fit_btn = QPushButton("Fit")
+        self._fit_btn.setCheckable(True)
+        self._fit_btn.setChecked(True)
+        self._fit_btn.clicked.connect(self._toggle_fit)
+
+        bar.addWidget(zoom_out)
+        bar.addWidget(self._zoom_label)
+        bar.addWidget(zoom_in)
+        bar.addWidget(self._fit_btn)
+        layout.addLayout(bar)
+
+    def _load_image(self):
+        if not self._paths:
+            return
+        self._pixmap = QPixmap(self._paths[self._index])
+        name = os.path.basename(self._paths[self._index])
+        self.setWindowTitle(f"{name}  ({self._index + 1} of {len(self._paths)})")
+        self._prev_btn.setEnabled(self._index > 0)
+        self._next_btn.setEnabled(self._index < len(self._paths) - 1)
+        self._apply_display()
+
+    def _apply_display(self):
+        if self._pixmap.isNull():
+            self._img_label.setText("(Image not found)")
+            return
+        if self._fit:
+            scaled = self._pixmap.scaled(
+                self._scroll.viewport().size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            self._scale = scaled.width() / self._pixmap.width()
+        else:
+            scaled = self._pixmap.scaled(
+                round(self._pixmap.width()  * self._scale),
+                round(self._pixmap.height() * self._scale),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        self._img_label.setPixmap(scaled)
+        self._img_label.resize(scaled.size())
+        self._zoom_label.setText(f"{round(self._scale * 100)}%")
+
+    def _toggle_fit(self, checked: bool):
+        self._fit = checked
+        self._fit_btn.setChecked(checked)
+        self._apply_display()
+
+    def _zoom_in(self):
+        self._set_zoom(self._scale * self._ZOOM_STEP)
+
+    def _zoom_out(self):
+        self._set_zoom(self._scale / self._ZOOM_STEP)
+
+    def _set_zoom(self, factor: float):
+        self._fit = False
+        self._fit_btn.setChecked(False)
+        self._scale = max(0.05, min(factor, 10.0))
+        self._apply_display()
+
+    def _prev(self):
+        if self._index > 0:
+            self._index -= 1
+            self._load_image()
+
+    def _next(self):
+        if self._index < len(self._paths) - 1:
+            self._index += 1
+            self._load_image()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._fit:
+            self._apply_display()
+
+    def eventFilter(self, source, event):
+        if source is self._scroll.viewport() and event.type() == QEvent.Type.Wheel:
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                if event.angleDelta().y() > 0:
+                    self._zoom_in()
+                else:
+                    self._zoom_out()
+                return True
+        return super().eventFilter(source, event)
+
+    def keyPressEvent(self, event):
+        k = event.key()
+        if k == Qt.Key.Key_Left:
+            self._prev()
+        elif k == Qt.Key.Key_Right:
+            self._next()
+        elif k in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
+            self._zoom_in()
+        elif k == Qt.Key.Key_Minus:
+            self._zoom_out()
+        elif k == Qt.Key.Key_0 and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self._toggle_fit(True)
+        elif k == Qt.Key.Key_Escape:
+            self.close()
+        else:
+            super().keyPressEvent(event)
+
+
 # ── add image dialog ─────────────────────────────────────────────────────────
 
 class AddImageDialog(QDialog):
@@ -719,8 +871,9 @@ class GarageTab(QWidget):
         self.on_vehicle_changed = on_vehicle_changed
         self.get_unit = get_unit
         self.get_resources_folder = get_resources_folder
-        self._vehicle_ids: list[int] = []
-        self._image_ids:   list[int] = []
+        self._vehicle_ids:  list[int] = []
+        self._image_ids:    list[int] = []
+        self._image_paths:  list[str] = []
         self._build_ui()
         self.refresh()
 
@@ -840,15 +993,16 @@ class GarageTab(QWidget):
             self.refresh()
 
     def _load_images(self, vehicle_id: int | None):
-        self._image_ids = []
+        self._image_ids   = []
+        self._image_paths = []
         self._image_list.clear()
         if vehicle_id is None:
             return
         images = self.db.get_vehicle_images(vehicle_id)
-        self._image_ids = [img["id"] for img in images]
-        for img in images:
-            path = img["path"]
-            pix  = QPixmap(path)
+        self._image_ids   = [img["id"]   for img in images]
+        self._image_paths = [img["path"] for img in images]
+        for path in self._image_paths:
+            pix = QPixmap(path)
             if pix.isNull():
                 icon = QIcon()
             else:
@@ -857,9 +1011,7 @@ class GarageTab(QWidget):
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation,
                 ))
-            item = QListWidgetItem(icon, os.path.basename(path))
-            item.setData(Qt.ItemDataRole.UserRole, path)
-            self._image_list.addItem(item)
+            self._image_list.addItem(QListWidgetItem(icon, os.path.basename(path)))
 
     def _add_image(self):
         resources_folder = self.get_resources_folder()
@@ -887,7 +1039,7 @@ class GarageTab(QWidget):
         row = self._image_list.currentRow()
         if row < 0 or row >= len(self._image_ids):
             return
-        path = self._image_list.item(row).data(Qt.ItemDataRole.UserRole)
+        path = self._image_paths[row]
         if QMessageBox.question(
             self, "Remove Image",
             f"Delete '{os.path.basename(path)}' from the Resources folder and remove it from this vehicle?",
@@ -901,12 +1053,10 @@ class GarageTab(QWidget):
             self._load_images(self.selected_id())
 
     def _open_image(self):
-        item = self._image_list.currentItem()
-        if item is None:
+        row = self._image_list.currentRow()
+        if row < 0 or not self._image_paths:
             return
-        path = item.data(Qt.ItemDataRole.UserRole)
-        if path:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        ImageViewerDialog(self, self._image_paths, row).exec()
 
 
 # ── schedule tab ─────────────────────────────────────────────────────────────
