@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QDialog, QFormLayout, QLineEdit,
     QSpinBox, QDoubleSpinBox, QTextEdit, QDialogButtonBox, QStatusBar,
     QMessageBox, QHeaderView, QTabWidget, QLabel, QComboBox, QPushButton,
-    QDateEdit, QRadioButton, QButtonGroup, QGroupBox,
+    QDateEdit, QRadioButton, QButtonGroup, QGroupBox, QFileDialog,
 )
 from PySide6.QtCore import Qt, QDate, QSettings, QUrl
 from PySide6.QtGui import QColor, QBrush, QPalette, QDesktopServices
@@ -1130,13 +1130,15 @@ class PartsTab(QWidget):
 # ── settings tab ─────────────────────────────────────────────────────────────
 
 class SettingsTab(QWidget):
-    def __init__(self, apply_theme, apply_unit, current_theme, current_unit):
+    def __init__(self, apply_theme, apply_unit, save_resources_folder,
+                 current_theme, current_unit, current_resources_folder):
         super().__init__()
-        self._apply_theme = apply_theme
-        self._apply_unit  = apply_unit
-        self._build_ui(current_theme, current_unit)
+        self._apply_theme          = apply_theme
+        self._apply_unit           = apply_unit
+        self._save_resources_folder = save_resources_folder
+        self._build_ui(current_theme, current_unit, current_resources_folder)
 
-    def _build_ui(self, current_theme, current_unit):
+    def _build_ui(self, current_theme, current_unit, current_resources_folder):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(20, 20, 20, 20)
         outer.setSpacing(16)
@@ -1173,6 +1175,23 @@ class SettingsTab(QWidget):
         )
         outer.addWidget(unit_box)
 
+        # Resources folder
+        res_box    = QGroupBox("Resources Folder")
+        res_layout = QVBoxLayout(res_box)
+        path_row   = QHBoxLayout()
+        self._res_path = QLineEdit(current_resources_folder or "")
+        self._res_path.setReadOnly(True)
+        self._res_path.setPlaceholderText("No folder selected")
+        path_row.addWidget(self._res_path)
+        browse_btn = QPushButton("Browse…")
+        browse_btn.clicked.connect(self._browse_resources)
+        path_row.addWidget(browse_btn)
+        open_btn = QPushButton("Open")
+        open_btn.clicked.connect(self._open_resources)
+        path_row.addWidget(open_btn)
+        res_layout.addLayout(path_row)
+        outer.addWidget(res_box)
+
         outer.addStretch()
 
     def sync_theme(self, theme: str):
@@ -1180,6 +1199,20 @@ class SettingsTab(QWidget):
 
     def sync_unit(self, unit: str):
         (self._km_btn if unit == "km" else self._mi_btn).setChecked(True)
+
+    def _browse_resources(self):
+        start = self._res_path.text() or ""
+        folder = QFileDialog.getExistingDirectory(self, "Select Resources Folder", start)
+        if folder:
+            self._res_path.setText(folder)
+            self._save_resources_folder(folder)
+
+    def _open_resources(self):
+        path = self._res_path.text()
+        if path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        else:
+            QMessageBox.information(self, "No Folder", "No resources folder has been selected.")
 
 
 # ── main window ──────────────────────────────────────────────────────────────
@@ -1207,8 +1240,10 @@ class VehicleApp(QMainWindow):
         self.parts_tab     = PartsTab(self.db)
         self.settings_tab  = SettingsTab(
             self._apply_theme, self._apply_unit,
+            lambda path: self.settings.setValue("resources_folder", path),
             current_theme=self.settings.value("theme", "dark"),
             current_unit=self.settings.value("unit", "km"),
+            current_resources_folder=self.settings.value("resources_folder", ""),
         )
         self.tabs.addTab(self.garage_tab,    "Garage")
         self.tabs.addTab(self.schedule_tab,  "Schedule")
