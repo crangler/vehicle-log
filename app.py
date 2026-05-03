@@ -126,6 +126,12 @@ class DatabaseManager:
                 vehicle_id  INTEGER NOT NULL REFERENCES vehicles(id) ON DELETE CASCADE,
                 path        TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS service_log_images (
+                id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                log_id  INTEGER NOT NULL REFERENCES service_log(id) ON DELETE CASCADE,
+                path    TEXT NOT NULL
+            );
         """)
         self.conn.commit()
 
@@ -291,6 +297,32 @@ class DatabaseManager:
 
     def delete_vehicle_image(self, image_id):
         self.conn.execute("DELETE FROM vehicle_images WHERE id=?", (image_id,))
+        self.conn.commit()
+
+    # service log images
+
+    def get_service_log_entries(self, vehicle_id):
+        return self.conn.execute("""
+            SELECT sl.*, mi.name AS service_name
+            FROM service_log sl
+            JOIN maintenance_items mi ON sl.item_id = mi.id
+            WHERE sl.vehicle_id = ?
+            ORDER BY sl.service_date DESC, sl.id DESC
+        """, (vehicle_id,)).fetchall()
+
+    def get_service_log_images(self, log_id):
+        return self.conn.execute(
+            "SELECT * FROM service_log_images WHERE log_id=? ORDER BY id", (log_id,)
+        ).fetchall()
+
+    def add_service_log_image(self, log_id, path):
+        self.conn.execute(
+            "INSERT INTO service_log_images (log_id, path) VALUES (?, ?)", (log_id, path)
+        )
+        self.conn.commit()
+
+    def delete_service_log_image(self, image_id):
+        self.conn.execute("DELETE FROM service_log_images WHERE id=?", (image_id,))
         self.conn.commit()
 
     # schedule
@@ -1281,6 +1313,188 @@ class ServicesTab(QWidget):
             self.refresh()
 
 
+# ── service log tab ──────────────────────────────────────────────────────────
+
+class ServiceLogTab(QWidget):
+    def __init__(self, db: DatabaseManager, get_unit, get_resources_folder):
+        super().__init__()
+        self.db = db
+        self.get_unit = get_unit
+        self.get_resources_folder = get_resources_folder
+        self._vehicle_id:  int | None = None
+        self._log_ids:     list[int]  = []
+        self._image_ids:   list[int]  = []
+        self._image_paths: list[str]  = []
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+
+        top_row = QHBoxLayout()
+        self.vehicle_label = QLabel("Select a vehicle in the Garage tab to view its service log.")
+        top_row.addWidget(self.vehicle_label)
+        top_row.addStretch()
+        log_btn = QPushButton("Log Service")
+        log_btn.clicked.connect(self._log_service)
+        top_row.addWidget(log_btn)
+        layout.addLayout(top_row)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(5)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.currentCellChanged.connect(lambda row, *_: self._row_changed(row))
+        layout.addWidget(self.table)
+
+        img_hdr = QHBoxLayout()
+        img_hdr.addWidget(QLabel("Images:"))
+        img_hdr.addStretch()
+        for label, slot in [
+            ("Add Image", self._add_image),
+            ("Remove",    self._remove_image),
+            ("Open",      self._open_image),
+        ]:
+            btn = QPushButton(label)
+            btn.clicked.connect(slot)
+            img_hdr.addWidget(btn)
+        layout.addLayout(img_hdr)
+
+        self._image_list = QListWidget()
+        self._image_list.setViewMode(QListWidget.ViewMode.IconMode)
+        self._image_list.setIconSize(QSize(100, 75))
+        self._image_list.setFixedHeight(130)
+        self._image_list.setFlow(QListWidget.Flow.LeftToRight)
+        self._image_list.setWrapping(False)
+        self._image_list.setSpacing(4)
+        self._image_list.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self._image_list.doubleClicked.connect(self._open_image)
+        layout.addWidget(self._image_list)
+
+    def set_vehicle(self, vehicle_id: int | None):
+        self._vehicle_id = vehicle_id
+        self.refresh()
+
+    def refresh(self):
+        unit = self.get_unit()
+        self.table.setHorizontalHeaderLabels([
+            "Service", "Date", f"Odometer ({unit})", "Cost", "Shop",
+        ])
+
+        if self._vehicle_id is None:
+            self.table.setRowCount(0)
+            self._log_ids = []
+            self.vehicle_label.setText("Select a vehicle in the Garage tab to view its service log.")
+            self._load_images(None)
+            return
+
+        vehicle = self.db.get_vehicle(self._vehicle_id)
+        name = vehicle["nickname"] or f"{vehicle['year']} {vehicle['make']} {vehicle['model']}"
+        self.vehicle_label.setText(f"<b>{name}</b>")
+
+        entries = self.db.get_service_log_entries(self._vehicle_id)
+        self._log_ids = [e["id"] for e in entries]
+        self.table.setRowCount(len(entries))
+
+        for row, e in enumerate(entries):
+            dist_str = f"{km_to_unit(e['mileage_at_service'], unit):,}" if e["mileage_at_service"] else "—"
+            cost_str = f"${e['cost']:.2f}" if e["cost"] else "—"
+            for col, text in enumerate([
+                e["service_name"], e["service_date"], dist_str, cost_str, e["shop"] or "—",
+            ]):
+                cell = QTableWidgetItem(text)
+                if col in (2, 3):
+                    cell.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.table.setItem(row, col, cell)
+
+        self._load_images(self._selected_log_id())
+
+    def _selected_log_id(self) -> int | None:
+        row = self.table.currentRow()
+        return self._log_ids[row] if 0 <= row < len(self._log_ids) else None
+
+    def _row_changed(self, row):
+        self._load_images(self._log_ids[row] if 0 <= row < len(self._log_ids) else None)
+
+    def _load_images(self, log_id: int | None):
+        self._image_ids   = []
+        self._image_paths = []
+        self._image_list.clear()
+        if log_id is None:
+            return
+        images = self.db.get_service_log_images(log_id)
+        self._image_ids   = [img["id"]   for img in images]
+        self._image_paths = [img["path"] for img in images]
+        for path in self._image_paths:
+            pix = QPixmap(path)
+            icon = QIcon(pix.scaled(
+                100, 75,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )) if not pix.isNull() else QIcon()
+            self._image_list.addItem(QListWidgetItem(icon, os.path.basename(path)))
+
+    def _add_image(self):
+        resources_folder = self.get_resources_folder()
+        if not resources_folder:
+            QMessageBox.warning(
+                self, "No Resources Folder",
+                "Please set a Resources Folder in Settings before adding images.",
+            )
+            return
+        lid = self._selected_log_id()
+        if lid is None:
+            QMessageBox.information(self, "No Entry Selected", "Select a service log entry before adding an image.")
+            return
+        dlg = AddImageDialog(self, resources_folder)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            try:
+                dest = dlg.get_destination_path()
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Could not save image:\n{e}")
+                return
+            self.db.add_service_log_image(lid, dest)
+            self._load_images(lid)
+
+    def _remove_image(self):
+        row = self._image_list.currentRow()
+        if row < 0 or row >= len(self._image_ids):
+            return
+        path = self._image_paths[row]
+        if QMessageBox.question(
+            self, "Remove Image",
+            f"Delete '{os.path.basename(path)}' from the Resources folder and remove it from this entry?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        ) == QMessageBox.StandardButton.Yes:
+            self.db.delete_service_log_image(self._image_ids[row])
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            self._load_images(self._selected_log_id())
+
+    def _open_image(self):
+        row = self._image_list.currentRow()
+        if row < 0 or not self._image_paths:
+            return
+        ImageViewerDialog(self, self._image_paths, row).exec()
+
+    def _log_service(self):
+        dlg = LogServiceDialog(
+            self,
+            self.db,
+            self.db.get_all_vehicles(),
+            vehicle_id=self._vehicle_id,
+            unit=self.get_unit(),
+        )
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.db.log_service(dlg.get_data())
+            self.refresh()
+
+
 # ── parts tab ────────────────────────────────────────────────────────────────
 
 class PartDialog(QDialog):
@@ -1598,6 +1812,11 @@ class VehicleApp(QMainWindow):
             lambda: self.settings.value("resources_folder", ""),
         )
         self.schedule_tab  = ScheduleTab(self.db, lambda: self.unit)
+        self.log_tab       = ServiceLogTab(
+            self.db,
+            lambda: self.unit,
+            lambda: self.settings.value("resources_folder", ""),
+        )
         self.services_tab  = ServicesTab(self.db, lambda: self.unit)
         self.parts_tab     = PartsTab(self.db)
         self.settings_tab  = SettingsTab(
@@ -1609,6 +1828,7 @@ class VehicleApp(QMainWindow):
         )
         self.tabs.addTab(self.garage_tab,    "Garage")
         self.tabs.addTab(self.schedule_tab,  "Schedule")
+        self.tabs.addTab(self.log_tab,       "Log")
         self.tabs.addTab(self.services_tab,  "Services")
         self.tabs.addTab(self.parts_tab,     "Parts")
         self.tabs.addTab(self.settings_tab,  "Settings")
@@ -1628,10 +1848,12 @@ class VehicleApp(QMainWindow):
         self.settings_tab.sync_unit(unit)
         self.garage_tab.refresh()
         self.schedule_tab.refresh()
+        self.log_tab.refresh()
         self.services_tab.refresh()
 
     def _on_vehicle_selected(self, vehicle_id: int | None):
         self.schedule_tab.set_vehicle(vehicle_id)
+        self.log_tab.set_vehicle(vehicle_id)
         self.services_tab.set_vehicle(vehicle_id)
         self.parts_tab.refresh()
         self._update_status()
