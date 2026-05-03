@@ -1,4 +1,6 @@
 import sys
+import os
+import shutil
 import sqlite3
 import calendar
 from datetime import date
@@ -8,9 +10,10 @@ from PySide6.QtWidgets import (
     QSpinBox, QDoubleSpinBox, QTextEdit, QDialogButtonBox, QStatusBar,
     QMessageBox, QHeaderView, QTabWidget, QLabel, QComboBox, QPushButton,
     QDateEdit, QRadioButton, QButtonGroup, QGroupBox, QFileDialog,
+    QListWidget, QListWidgetItem,
 )
-from PySide6.QtCore import Qt, QDate, QSettings, QUrl
-from PySide6.QtGui import QColor, QBrush, QPalette, QDesktopServices
+from PySide6.QtCore import Qt, QDate, QSettings, QSize, QUrl
+from PySide6.QtGui import QColor, QBrush, QPalette, QDesktopServices, QPixmap, QIcon
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -116,6 +119,12 @@ class DatabaseManager:
                 supplier        TEXT,
                 url             TEXT,
                 price           REAL
+            );
+
+            CREATE TABLE IF NOT EXISTS vehicle_images (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                vehicle_id  INTEGER NOT NULL REFERENCES vehicles(id) ON DELETE CASCADE,
+                path        TEXT NOT NULL
             );
         """)
         self.conn.commit()
@@ -265,6 +274,23 @@ class DatabaseManager:
 
     def delete_part(self, part_id):
         self.conn.execute("DELETE FROM parts WHERE id=?", (part_id,))
+        self.conn.commit()
+
+    # vehicle images
+
+    def get_vehicle_images(self, vehicle_id):
+        return self.conn.execute(
+            "SELECT * FROM vehicle_images WHERE vehicle_id=? ORDER BY id", (vehicle_id,)
+        ).fetchall()
+
+    def add_vehicle_image(self, vehicle_id, path):
+        self.conn.execute(
+            "INSERT INTO vehicle_images (vehicle_id, path) VALUES (?, ?)", (vehicle_id, path)
+        )
+        self.conn.commit()
+
+    def delete_vehicle_image(self, image_id):
+        self.conn.execute("DELETE FROM vehicle_images WHERE id=?", (image_id,))
         self.conn.commit()
 
     # schedule
@@ -602,15 +628,99 @@ class MaintenanceItemDialog(QDialog):
         }
 
 
+# ── add image dialog ─────────────────────────────────────────────────────────
+
+class AddImageDialog(QDialog):
+    def __init__(self, parent, resources_folder: str):
+        super().__init__(parent)
+        self.setWindowTitle("Add Vehicle Image")
+        self.setMinimumWidth(500)
+        self._resources_folder = resources_folder
+        self._source_path = ""
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QFormLayout(self)
+
+        src_row = QHBoxLayout()
+        self._src_edit = QLineEdit()
+        self._src_edit.setReadOnly(True)
+        self._src_edit.setPlaceholderText("No file selected")
+        src_row.addWidget(self._src_edit)
+        browse_btn = QPushButton("Browse…")
+        browse_btn.clicked.connect(self._browse_source)
+        src_row.addWidget(browse_btn)
+        layout.addRow("Image File *:", src_row)
+
+        self._folder_combo = QComboBox()
+        self._folder_combo.setEditable(True)
+        self._folder_combo.lineEdit().setPlaceholderText("Resources root  (type a name to create a subfolder)")
+        self._populate_folders()
+        layout.addRow("Folder:", self._folder_combo)
+
+        self._filename_edit = QLineEdit()
+        self._filename_edit.setPlaceholderText("Auto-filled when image is selected")
+        layout.addRow("Filename *:", self._filename_edit)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._validate_and_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+
+    def _populate_folders(self):
+        self._folder_combo.clear()
+        self._folder_combo.addItem("")
+        try:
+            for entry in sorted(os.scandir(self._resources_folder), key=lambda e: e.name.lower()):
+                if entry.is_dir():
+                    self._folder_combo.addItem(entry.name)
+        except OSError:
+            pass
+
+    def _browse_source(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Image", "",
+            "Images (*.png *.jpg *.jpeg *.gif *.bmp *.webp)",
+        )
+        if path:
+            self._source_path = path
+            self._src_edit.setText(path)
+            self._filename_edit.setText(os.path.basename(path))
+
+    def _validate_and_accept(self):
+        if not self._source_path:
+            QMessageBox.warning(self, "Required", "Please select an image file.")
+            return
+        if not self._filename_edit.text().strip():
+            QMessageBox.warning(self, "Required", "Please enter a filename.")
+            return
+        self.accept()
+
+    def get_destination_path(self) -> str:
+        dest_dir = self._resources_folder
+        subfolder = self._folder_combo.currentText().strip()
+        if subfolder:
+            dest_dir = os.path.join(dest_dir, subfolder)
+            os.makedirs(dest_dir, exist_ok=True)
+        dest_path = os.path.join(dest_dir, self._filename_edit.text().strip())
+        if os.path.abspath(dest_path) != os.path.abspath(self._source_path):
+            shutil.copy2(self._source_path, dest_path)
+        return dest_path
+
+
 # ── garage tab ──────────────────────────────────────────────────────────────
 
 class GarageTab(QWidget):
-    def __init__(self, db: DatabaseManager, on_vehicle_changed, get_unit):
+    def __init__(self, db: DatabaseManager, on_vehicle_changed, get_unit, get_resources_folder):
         super().__init__()
         self.db = db
         self.on_vehicle_changed = on_vehicle_changed
         self.get_unit = get_unit
+        self.get_resources_folder = get_resources_folder
         self._vehicle_ids: list[int] = []
+        self._image_ids:   list[int] = []
         self._build_ui()
         self.refresh()
 
@@ -641,6 +751,31 @@ class GarageTab(QWidget):
         self.table.currentCellChanged.connect(lambda row, *_: self._row_changed(row))
         layout.addWidget(self.table)
 
+        # images section
+        img_hdr = QHBoxLayout()
+        img_hdr.addWidget(QLabel("Images:"))
+        img_hdr.addStretch()
+        for label, slot in [
+            ("Add Image", self._add_image),
+            ("Remove",    self._remove_image),
+            ("Open",      self._open_image),
+        ]:
+            btn = QPushButton(label)
+            btn.clicked.connect(slot)
+            img_hdr.addWidget(btn)
+        layout.addLayout(img_hdr)
+
+        self._image_list = QListWidget()
+        self._image_list.setViewMode(QListWidget.ViewMode.IconMode)
+        self._image_list.setIconSize(QSize(100, 75))
+        self._image_list.setFixedHeight(130)
+        self._image_list.setFlow(QListWidget.Flow.LeftToRight)
+        self._image_list.setWrapping(False)
+        self._image_list.setSpacing(4)
+        self._image_list.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self._image_list.doubleClicked.connect(self._open_image)
+        layout.addWidget(self._image_list)
+
     def refresh(self):
         unit = self.get_unit()
         self.table.setHorizontalHeaderLabels([
@@ -665,8 +800,12 @@ class GarageTab(QWidget):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self.table.setItem(row, col, item)
 
+        self._load_images(self.selected_id())
+
     def _row_changed(self, row):
-        self.on_vehicle_changed(self._vehicle_ids[row] if row >= 0 else None)
+        vid = self._vehicle_ids[row] if row >= 0 else None
+        self.on_vehicle_changed(vid)
+        self._load_images(vid)
 
     def selected_id(self) -> int | None:
         row = self.table.currentRow()
@@ -699,6 +838,75 @@ class GarageTab(QWidget):
         ) == QMessageBox.StandardButton.Yes:
             self.db.delete_vehicle(vid)
             self.refresh()
+
+    def _load_images(self, vehicle_id: int | None):
+        self._image_ids = []
+        self._image_list.clear()
+        if vehicle_id is None:
+            return
+        images = self.db.get_vehicle_images(vehicle_id)
+        self._image_ids = [img["id"] for img in images]
+        for img in images:
+            path = img["path"]
+            pix  = QPixmap(path)
+            if pix.isNull():
+                icon = QIcon()
+            else:
+                icon = QIcon(pix.scaled(
+                    100, 75,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                ))
+            item = QListWidgetItem(icon, os.path.basename(path))
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            self._image_list.addItem(item)
+
+    def _add_image(self):
+        resources_folder = self.get_resources_folder()
+        if not resources_folder:
+            QMessageBox.warning(
+                self, "No Resources Folder",
+                "Please set a Resources Folder in Settings before adding images.",
+            )
+            return
+        vid = self.selected_id()
+        if vid is None:
+            QMessageBox.information(self, "No Vehicle Selected", "Select a vehicle before adding an image.")
+            return
+        dlg = AddImageDialog(self, resources_folder)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            try:
+                dest = dlg.get_destination_path()
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Could not save image:\n{e}")
+                return
+            self.db.add_vehicle_image(vid, dest)
+            self._load_images(vid)
+
+    def _remove_image(self):
+        row = self._image_list.currentRow()
+        if row < 0 or row >= len(self._image_ids):
+            return
+        path = self._image_list.item(row).data(Qt.ItemDataRole.UserRole)
+        if QMessageBox.question(
+            self, "Remove Image",
+            f"Delete '{os.path.basename(path)}' from the Resources folder and remove it from this vehicle?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        ) == QMessageBox.StandardButton.Yes:
+            self.db.delete_vehicle_image(self._image_ids[row])
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            self._load_images(self.selected_id())
+
+    def _open_image(self):
+        item = self._image_list.currentItem()
+        if item is None:
+            return
+        path = item.data(Qt.ItemDataRole.UserRole)
+        if path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
 
 # ── schedule tab ─────────────────────────────────────────────────────────────
@@ -1234,7 +1442,11 @@ class VehicleApp(QMainWindow):
 
     def _build_ui(self):
         self.tabs          = QTabWidget()
-        self.garage_tab    = GarageTab(self.db, self._on_vehicle_selected, lambda: self.unit)
+        self.garage_tab    = GarageTab(
+            self.db, self._on_vehicle_selected,
+            lambda: self.unit,
+            lambda: self.settings.value("resources_folder", ""),
+        )
         self.schedule_tab  = ScheduleTab(self.db, lambda: self.unit)
         self.services_tab  = ServicesTab(self.db, lambda: self.unit)
         self.parts_tab     = PartsTab(self.db)
