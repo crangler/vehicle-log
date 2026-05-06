@@ -3,6 +3,7 @@ import os
 import shutil
 import sqlite3
 import calendar
+from collections.abc import Callable
 from datetime import date
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -44,28 +45,31 @@ _PDF_EXTS   = frozenset({'.pdf'})
 
 def _get_file_type(path: str) -> str:
     ext = os.path.splitext(path)[1].lower()
-    if ext in _IMAGE_EXTS: return 'image'
-    if ext in _VIDEO_EXTS: return 'video'
-    if ext in _PDF_EXTS:   return 'pdf'
+    if ext in _IMAGE_EXTS:
+        return 'image'
+    if ext in _VIDEO_EXTS:
+        return 'video'
+    if ext in _PDF_EXTS:
+        return 'pdf'
     return 'other'
 
 
 def add_months(d: date, months: int) -> date:
     month = d.month - 1 + months
-    year  = d.year + month // 12
+    year = d.year + month // 12
     month = month % 12 + 1
-    day   = min(d.day, calendar.monthrange(year, month)[1])
+    day = min(d.day, calendar.monthrange(year, month)[1])
     return date(year, month, day)
 
 
 KM_PER_MI = 1.60934
 
-def km_to_unit(km, unit: str) -> int:
+def km_to_unit(km: int | None, unit: str) -> int:
     if km is None:
         return 0
     return round(km / KM_PER_MI) if unit == "mi" else round(km)
 
-def unit_to_km(val, unit: str) -> int:
+def unit_to_km(val: int | None, unit: str) -> int:
     if val is None:
         return 0
     return round(val * KM_PER_MI) if unit == "mi" else round(val)
@@ -550,33 +554,37 @@ class DatabaseManager:
 
 # ── schedule status ─────────────────────────────────────────────────────────
 
-STATUS_OK       = "OK"
+STATUS_OK = "OK"
 STATUS_DUE_SOON = "Due Soon"
-STATUS_OVERDUE  = "Overdue"
-STATUS_UNKNOWN  = "Unknown"
+STATUS_OVERDUE = "Overdue"
+STATUS_UNKNOWN = "Unknown"
 
-PRIORITY        = [STATUS_OVERDUE, STATUS_DUE_SOON, STATUS_OK]
-DIST_WARNING    = 500
-DAYS_WARNING    = 30
+PRIORITY = [STATUS_OVERDUE, STATUS_DUE_SOON, STATUS_OK]
+DIST_WARNING = 500
+DAYS_WARNING = 30
 
 STATUS_COLORS = {
-    STATUS_OVERDUE:  QColor("#c0392b"),
+    STATUS_OVERDUE: QColor("#c0392b"),
     STATUS_DUE_SOON: QColor("#e67e22"),
-    STATUS_OK:       QColor("#27ae60"),
-    STATUS_UNKNOWN:  QColor("#7f8c8d"),
+    STATUS_OK: QColor("#27ae60"),
+    STATUS_UNKNOWN: QColor("#7f8c8d"),
 }
 
 
-def compute_status(item, last, vehicle):
+def compute_status(
+    item: sqlite3.Row,
+    last: sqlite3.Row | None,
+    vehicle: sqlite3.Row,
+) -> tuple[str, int | None, date | None]:
     if not last:
         return STATUS_UNKNOWN, None, None
 
-    today        = date.today()
+    today = date.today()
     current_dist = vehicle["current_mileage"]
-    next_dist    = None
-    next_date    = None
-    dist_status  = STATUS_OK
-    date_status  = STATUS_OK
+    next_dist = None
+    next_date = None
+    dist_status = STATUS_OK
+    date_status = STATUS_OK
 
     if item["interval_miles"] and last["mileage_at_service"] is not None:
         next_dist = last["mileage_at_service"] + item["interval_miles"]
@@ -732,12 +740,12 @@ class LogServiceDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Edit Service Entry" if entry else "Log Service")
         self.setMinimumWidth(460)
-        self._db                    = db
-        self._unit                  = unit
-        self._get_resources_folder  = get_resources_folder
-        self._staged_images: list[str]   = []
+        self._db = db
+        self._unit = unit
+        self._get_resources_folder = get_resources_folder
+        self._staged_images: list[str] = []
         self._removed_images: list[dict] = []
-        self._parts_data:    list[dict]  = []
+        self._parts_data: list[dict] = []
         if entry:
             self._preferred_item_id = entry["item_id"]
             vehicle_id = entry["vehicle_id"]
@@ -1090,13 +1098,13 @@ class MaintenanceItemDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Edit Service" if item else "Add Service")
         self.setMinimumWidth(460)
-        self._unit                 = unit
-        self._db                   = db
+        self._unit = unit
+        self._db = db
         self._get_resources_folder = get_resources_folder
-        self._vehicle_id           = vehicle_id
-        self._staged_files: list[str]   = []
+        self._vehicle_id = vehicle_id
+        self._staged_files: list[str] = []
         self._removed_files: list[dict] = []
-        self._parts_data:   list[dict]  = []
+        self._parts_data: list[dict] = []
         self._build_ui(item, unit)
         if item and db:
             self._populate_files(item["id"])
@@ -1801,15 +1809,21 @@ class AddAttachmentDialog(AddImageDialog):
 # ── garage tab ──────────────────────────────────────────────────────────────
 
 class GarageTab(QWidget):
-    def __init__(self, db: DatabaseManager, on_vehicle_changed, get_unit, get_resources_folder):
+    def __init__(
+        self,
+        db: DatabaseManager,
+        on_vehicle_changed: Callable[[int | None], None],
+        get_unit: Callable[[], str],
+        get_resources_folder: Callable[[], str],
+    ):
         super().__init__()
         self.db = db
         self.on_vehicle_changed = on_vehicle_changed
         self.get_unit = get_unit
         self.get_resources_folder = get_resources_folder
-        self._vehicle_ids:  list[int] = []
-        self._image_ids:    list[int] = []
-        self._image_paths:  list[str] = []
+        self._vehicle_ids: list[int] = []
+        self._image_ids: list[int] = []
+        self._image_paths: list[str] = []
         self._build_ui()
         self.refresh()
 
@@ -1998,15 +2012,21 @@ class GarageTab(QWidget):
 # ── schedule tab ─────────────────────────────────────────────────────────────
 
 class ScheduleTab(QWidget):
-    def __init__(self, db: DatabaseManager, get_unit, on_service_logged, get_resources_folder):
+    def __init__(
+        self,
+        db: DatabaseManager,
+        get_unit: Callable[[], str],
+        on_service_logged: Callable[[], None],
+        get_resources_folder: Callable[[], str],
+    ):
         super().__init__()
-        self.db                    = db
-        self.get_unit              = get_unit
-        self._on_service_logged    = on_service_logged
+        self.db = db
+        self.get_unit = get_unit
+        self._on_service_logged = on_service_logged
         self._get_resources_folder = get_resources_folder
-        self._vehicle_id:   int | None = None
-        self._item_ids:     list[int]  = []
-        self._last_entries: list       = []
+        self._vehicle_id: int | None = None
+        self._item_ids: list[int] = []
+        self._last_entries: list = []
         self._build_ui()
 
     def _build_ui(self):
@@ -2144,16 +2164,21 @@ class ScheduleTab(QWidget):
 # ── services tab ─────────────────────────────────────────────────────────────
 
 class ServicesTab(QWidget):
-    def __init__(self, db: DatabaseManager, get_unit, get_resources_folder=None):
+    def __init__(
+        self,
+        db: DatabaseManager,
+        get_unit: Callable[[], str],
+        get_resources_folder: Callable[[], str] | None = None,
+    ):
         super().__init__()
-        self.db                    = db
-        self.get_unit              = get_unit
-        self.get_resources_folder  = get_resources_folder
+        self.db = db
+        self.get_unit = get_unit
+        self.get_resources_folder = get_resources_folder
         self._vehicle_id: int | None = None
-        self._item_ids:   list[int]  = []
-        self._file_ids:   list[int]  = []
-        self._file_paths: list[str]  = []
-        self._file_types: list[str]  = []
+        self._item_ids: list[int] = []
+        self._file_ids: list[int] = []
+        self._file_paths: list[str] = []
+        self._file_types: list[str] = []
         self._build_ui()
         self.refresh()
 
@@ -2380,17 +2405,23 @@ class ServicesTab(QWidget):
 # ── service log tab ──────────────────────────────────────────────────────────
 
 class ServiceLogTab(QWidget):
-    def __init__(self, db: DatabaseManager, get_unit, get_resources_folder, on_service_logged):
+    def __init__(
+        self,
+        db: DatabaseManager,
+        get_unit: Callable[[], str],
+        get_resources_folder: Callable[[], str],
+        on_service_logged: Callable[[], None],
+    ):
         super().__init__()
         self.db = db
         self.get_unit = get_unit
         self.get_resources_folder = get_resources_folder
         self._on_service_logged = on_service_logged
-        self._vehicle_id:  int | None = None
-        self._log_ids:     list[int]  = []
-        self._image_ids:   list[int]  = []
-        self._image_paths: list[str]  = []
-        self._file_types:  list[str]  = []
+        self._vehicle_id: int | None = None
+        self._log_ids: list[int] = []
+        self._image_ids: list[int] = []
+        self._image_paths: list[str] = []
+        self._file_types: list[str] = []
         self._build_ui()
 
     def _build_ui(self):
