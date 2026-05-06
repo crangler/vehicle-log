@@ -96,6 +96,7 @@ class DatabaseManager:
         self._create_tables()
         self._migrate_per_vehicle_items()
         self._migrate_service_log_images()
+        self._migrate_odometer_reading_date()
         for v in self.conn.execute("SELECT id FROM vehicles"):
             self._seed_vehicle_maintenance_items(v["id"])
 
@@ -111,9 +112,10 @@ class DatabaseManager:
                 color           TEXT,
                 vin             TEXT,
                 license_plate   TEXT,
-                current_mileage INTEGER DEFAULT 0,
-                notes           TEXT,
-                date_added      TEXT DEFAULT (date('now'))
+                current_mileage       INTEGER DEFAULT 0,
+                odometer_reading_date TEXT,
+                notes                 TEXT,
+                date_added            TEXT DEFAULT (date('now'))
             );
 
             CREATE TABLE IF NOT EXISTS maintenance_items (
@@ -217,6 +219,12 @@ class DatabaseManager:
             )
             self.conn.commit()
 
+    def _migrate_odometer_reading_date(self):
+        cols = {row[1] for row in self.conn.execute("PRAGMA table_info(vehicles)")}
+        if "odometer_reading_date" not in cols:
+            self.conn.execute("ALTER TABLE vehicles ADD COLUMN odometer_reading_date TEXT")
+            self.conn.commit()
+
     def _seed_vehicle_maintenance_items(self, vehicle_id):
         if self.conn.execute(
             "SELECT COUNT(*) FROM maintenance_items WHERE vehicle_id=?", (vehicle_id,)
@@ -232,9 +240,9 @@ class DatabaseManager:
     def add_vehicle(self, data):
         cur = self.conn.execute("""
             INSERT INTO vehicles
-                (nickname, year, make, model, trim, color, vin, license_plate, current_mileage, notes)
+                (nickname, year, make, model, trim, color, vin, license_plate, current_mileage, odometer_reading_date, notes)
             VALUES
-                (:nickname, :year, :make, :model, :trim, :color, :vin, :license_plate, :current_mileage, :notes)
+                (:nickname, :year, :make, :model, :trim, :color, :vin, :license_plate, :current_mileage, :odometer_reading_date, :notes)
         """, data)
         self.conn.commit()
         self._seed_vehicle_maintenance_items(cur.lastrowid)
@@ -244,7 +252,8 @@ class DatabaseManager:
             UPDATE vehicles
             SET nickname=:nickname, year=:year, make=:make, model=:model,
                 trim=:trim, color=:color, vin=:vin, license_plate=:license_plate,
-                current_mileage=:current_mileage, notes=:notes
+                current_mileage=:current_mileage, odometer_reading_date=:odometer_reading_date,
+                notes=:notes
             WHERE id=:id
         """, {**data, "id": vehicle_id})
         self.conn.commit()
@@ -602,19 +611,32 @@ class VehicleDialog(QDialog):
         self.current_mileage.setRange(0, 9_999_999)
         self.current_mileage.setSingleStep(100)
         self.current_mileage.setValue(km_to_unit(v["current_mileage"], unit) if v else 0)
+
+        self.odometer_reading_date = QDateEdit()
+        self.odometer_reading_date.setCalendarPopup(True)
+        self.odometer_reading_date.setDisplayFormat("yyyy-MM-dd")
+        self.odometer_reading_date.setSpecialValueText(" ")
+        self.odometer_reading_date.setMinimumDate(QDate(1900, 1, 1))
+        stored_date = val("odometer_reading_date")
+        if stored_date:
+            self.odometer_reading_date.setDate(QDate.fromString(stored_date, "yyyy-MM-dd"))
+        else:
+            self.odometer_reading_date.setDate(QDate.currentDate())
+
         self.notes           = QTextEdit(val("notes"))
         self.notes.setFixedHeight(70)
 
-        layout.addRow("Nickname:",            self.nickname)
-        layout.addRow("Year *:",              self.year)
-        layout.addRow("Make *:",              self.make)
-        layout.addRow("Model *:",             self.model)
-        layout.addRow("Trim:",                self.trim)
-        layout.addRow("Color:",               self.color)
-        layout.addRow("VIN:",                 self.vin)
-        layout.addRow("License Plate:",       self.license_plate)
-        layout.addRow(f"Odometer ({unit}):", self.current_mileage)
-        layout.addRow("Notes:",               self.notes)
+        layout.addRow("Nickname:",                    self.nickname)
+        layout.addRow("Year *:",                      self.year)
+        layout.addRow("Make *:",                      self.make)
+        layout.addRow("Model *:",                     self.model)
+        layout.addRow("Trim:",                        self.trim)
+        layout.addRow("Color:",                       self.color)
+        layout.addRow("VIN:",                         self.vin)
+        layout.addRow("License Plate:",               self.license_plate)
+        layout.addRow(f"Odometer ({unit}):",          self.current_mileage)
+        layout.addRow("Odometer Reading Date:",       self.odometer_reading_date)
+        layout.addRow("Notes:",                       self.notes)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -633,17 +655,19 @@ class VehicleDialog(QDialog):
         self.accept()
 
     def get_data(self):
+        d = self.odometer_reading_date.date()
         return {
-            "nickname":        self.nickname.text().strip() or None,
-            "year":            self.year.value(),
-            "make":            self.make.text().strip(),
-            "model":           self.model.text().strip(),
-            "trim":            self.trim.text().strip() or None,
-            "color":           self.color.text().strip() or None,
-            "vin":             self.vin.text().strip() or None,
-            "license_plate":   self.license_plate.text().strip() or None,
-            "current_mileage": unit_to_km(self.current_mileage.value(), self._unit),
-            "notes":           self.notes.toPlainText().strip() or None,
+            "nickname":               self.nickname.text().strip() or None,
+            "year":                   self.year.value(),
+            "make":                   self.make.text().strip(),
+            "model":                  self.model.text().strip(),
+            "trim":                   self.trim.text().strip() or None,
+            "color":                  self.color.text().strip() or None,
+            "vin":                    self.vin.text().strip() or None,
+            "license_plate":          self.license_plate.text().strip() or None,
+            "current_mileage":        unit_to_km(self.current_mileage.value(), self._unit),
+            "odometer_reading_date":  d.toString("yyyy-MM-dd") if d.isValid() else None,
+            "notes":                  self.notes.toPlainText().strip() or None,
         }
 
 
@@ -1780,7 +1804,7 @@ class GarageTab(QWidget):
         unit = self.get_unit()
         self.table.setHorizontalHeaderLabels([
             "Nickname / Name", "Year", "Make", "Model", "Trim", "Color",
-            "Plate", f"Odometer ({unit})", "Added",
+            "Plate", f"Odometer ({unit})", "Odometer Date",
         ])
 
         vehicles          = self.db.get_all_vehicles()
@@ -1792,7 +1816,7 @@ class GarageTab(QWidget):
             cells = [
                 display_name, str(v["year"]), v["make"], v["model"],
                 v["trim"] or "", v["color"] or "", v["license_plate"] or "",
-                f"{km_to_unit(v['current_mileage'], unit):,}", v["date_added"],
+                f"{km_to_unit(v['current_mileage'], unit):,}", v["odometer_reading_date"] or "",
             ]
             for col, text in enumerate(cells):
                 item = QTableWidgetItem(text)
