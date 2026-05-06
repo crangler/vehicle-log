@@ -10,13 +10,39 @@ from PySide6.QtWidgets import (
     QSpinBox, QDoubleSpinBox, QTextEdit, QDialogButtonBox, QStatusBar,
     QMessageBox, QHeaderView, QTabWidget, QLabel, QComboBox, QPushButton,
     QDateEdit, QRadioButton, QButtonGroup, QGroupBox, QFileDialog,
-    QListWidget, QListWidgetItem, QScrollArea,
+    QListWidget, QListWidgetItem, QScrollArea, QSlider,
 )
 from PySide6.QtCore import Qt, QDate, QEvent, QSettings, QSize, QUrl
 from PySide6.QtGui import QColor, QBrush, QPalette, QDesktopServices, QPixmap, QIcon
 
+try:
+    from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+    from PySide6.QtMultimediaWidgets import QVideoWidget
+    _HAS_MULTIMEDIA = True
+except ImportError:
+    _HAS_MULTIMEDIA = False
+
+try:
+    from PySide6.QtPdf import QPdfDocument
+    from PySide6.QtPdfWidgets import QPdfView
+    _HAS_PDF = True
+except ImportError:
+    _HAS_PDF = False
+
 
 # ── helpers ────────────────────────────────────────────────────────────────
+
+_IMAGE_EXTS = frozenset({'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'})
+_VIDEO_EXTS = frozenset({'.mp4', '.avi', '.mov', '.mkv', '.wmv', '.m4v', '.webm', '.mpeg', '.mpg'})
+_PDF_EXTS   = frozenset({'.pdf'})
+
+def _get_file_type(path: str) -> str:
+    ext = os.path.splitext(path)[1].lower()
+    if ext in _IMAGE_EXTS: return 'image'
+    if ext in _VIDEO_EXTS: return 'video'
+    if ext in _PDF_EXTS:   return 'pdf'
+    return 'other'
+
 
 def add_months(d: date, months: int) -> date:
     month = d.month - 1 + months
@@ -69,6 +95,7 @@ class DatabaseManager:
         self.conn.row_factory = sqlite3.Row
         self._create_tables()
         self._migrate_per_vehicle_items()
+        self._migrate_service_log_images()
         for v in self.conn.execute("SELECT id FROM vehicles"):
             self._seed_vehicle_maintenance_items(v["id"])
 
@@ -132,6 +159,27 @@ class DatabaseManager:
                 log_id  INTEGER NOT NULL REFERENCES service_log(id) ON DELETE CASCADE,
                 path    TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS maintenance_item_files (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_id   INTEGER NOT NULL REFERENCES maintenance_items(id) ON DELETE CASCADE,
+                path      TEXT NOT NULL,
+                file_type TEXT NOT NULL DEFAULT 'image'
+            );
+
+            CREATE TABLE IF NOT EXISTS maintenance_item_parts (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_id  INTEGER NOT NULL REFERENCES maintenance_items(id) ON DELETE CASCADE,
+                part_id  INTEGER NOT NULL REFERENCES parts(id) ON DELETE CASCADE,
+                quantity INTEGER NOT NULL DEFAULT 1
+            );
+
+            CREATE TABLE IF NOT EXISTS service_log_parts (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                log_id   INTEGER NOT NULL REFERENCES service_log(id) ON DELETE CASCADE,
+                part_id  INTEGER NOT NULL REFERENCES parts(id) ON DELETE CASCADE,
+                quantity INTEGER NOT NULL DEFAULT 1
+            );
         """)
         self.conn.commit()
 
@@ -160,6 +208,14 @@ class DatabaseManager:
                 self.conn.execute("UPDATE service_log SET item_id=? WHERE id=?", (new_id, entry["id"]))
         self.conn.execute("DELETE FROM maintenance_items WHERE vehicle_id IS NULL")
         self.conn.commit()
+
+    def _migrate_service_log_images(self):
+        cols = {row[1] for row in self.conn.execute("PRAGMA table_info(service_log_images)")}
+        if "file_type" not in cols:
+            self.conn.execute(
+                "ALTER TABLE service_log_images ADD COLUMN file_type TEXT NOT NULL DEFAULT 'image'"
+            )
+            self.conn.commit()
 
     def _seed_vehicle_maintenance_items(self, vehicle_id):
         if self.conn.execute(
@@ -215,17 +271,18 @@ class DatabaseManager:
             (vehicle_id,),
         ).fetchall()
 
-    def add_maintenance_item(self, vehicle_id, data):
+    def add_maintenance_item(self, vehicle_id, data) -> int:
         max_order = self.conn.execute(
             "SELECT COALESCE(MAX(sort_order), 0) FROM maintenance_items WHERE vehicle_id=?",
             (vehicle_id,),
         ).fetchone()[0]
-        self.conn.execute(
+        cur = self.conn.execute(
             """INSERT INTO maintenance_items (vehicle_id, name, interval_miles, interval_months, sort_order)
                VALUES (:vehicle_id, :name, :interval_miles, :interval_months, :sort_order)""",
             {**data, "vehicle_id": vehicle_id, "sort_order": max_order + 1},
         )
         self.conn.commit()
+        return cur.lastrowid
 
     def update_maintenance_item(self, item_id, data):
         self.conn.execute(
@@ -239,6 +296,60 @@ class DatabaseManager:
     def delete_maintenance_item(self, item_id):
         self.conn.execute("DELETE FROM service_log WHERE item_id=?", (item_id,))
         self.conn.execute("DELETE FROM maintenance_items WHERE id=?", (item_id,))
+        self.conn.commit()
+
+    def get_maintenance_item_files(self, item_id):
+        return self.conn.execute(
+            "SELECT * FROM maintenance_item_files WHERE item_id=? ORDER BY id", (item_id,)
+        ).fetchall()
+
+    def add_maintenance_item_file(self, item_id, path, file_type='image'):
+        self.conn.execute(
+            "INSERT INTO maintenance_item_files (item_id, path, file_type) VALUES (?, ?, ?)",
+            (item_id, path, file_type),
+        )
+        self.conn.commit()
+
+    def delete_maintenance_item_file(self, file_id):
+        self.conn.execute("DELETE FROM maintenance_item_files WHERE id=?", (file_id,))
+        self.conn.commit()
+
+    def get_maintenance_item_parts(self, item_id):
+        return self.conn.execute("""
+            SELECT mip.id, mip.item_id, mip.part_id, mip.quantity,
+                   p.name, p.part_number
+            FROM maintenance_item_parts mip
+            JOIN parts p ON mip.part_id = p.id
+            WHERE mip.item_id = ?
+            ORDER BY p.name
+        """, (item_id,)).fetchall()
+
+    def set_maintenance_item_parts(self, item_id, parts):
+        self.conn.execute("DELETE FROM maintenance_item_parts WHERE item_id=?", (item_id,))
+        for p in parts:
+            self.conn.execute(
+                "INSERT INTO maintenance_item_parts (item_id, part_id, quantity) VALUES (?,?,?)",
+                (item_id, p["part_id"], p["quantity"]),
+            )
+        self.conn.commit()
+
+    def get_service_log_parts(self, log_id):
+        return self.conn.execute("""
+            SELECT slp.id, slp.log_id, slp.part_id, slp.quantity,
+                   p.name, p.part_number
+            FROM service_log_parts slp
+            JOIN parts p ON slp.part_id = p.id
+            WHERE slp.log_id = ?
+            ORDER BY p.name
+        """, (log_id,)).fetchall()
+
+    def set_service_log_parts(self, log_id, parts):
+        self.conn.execute("DELETE FROM service_log_parts WHERE log_id=?", (log_id,))
+        for p in parts:
+            self.conn.execute(
+                "INSERT INTO service_log_parts (log_id, part_id, quantity) VALUES (?,?,?)",
+                (log_id, p["part_id"], p["quantity"]),
+            )
         self.conn.commit()
 
     def get_service_log_count_for_item(self, item_id) -> int:
@@ -315,9 +426,10 @@ class DatabaseManager:
             "SELECT * FROM service_log_images WHERE log_id=? ORDER BY id", (log_id,)
         ).fetchall()
 
-    def add_service_log_image(self, log_id, path):
+    def add_service_log_image(self, log_id, path, file_type='image'):
         self.conn.execute(
-            "INSERT INTO service_log_images (log_id, path) VALUES (?, ?)", (log_id, path)
+            "INSERT INTO service_log_images (log_id, path, file_type) VALUES (?, ?, ?)",
+            (log_id, path, file_type),
         )
         self.conn.commit()
 
@@ -343,13 +455,29 @@ class DatabaseManager:
 
     # service log
 
-    def log_service(self, data):
-        self.conn.execute("""
+    def log_service(self, data) -> int:
+        cur = self.conn.execute("""
             INSERT INTO service_log
                 (vehicle_id, item_id, service_date, mileage_at_service, cost, shop, parts, notes)
             VALUES
                 (:vehicle_id, :item_id, :service_date, :mileage_at_service, :cost, :shop, :parts, :notes)
         """, data)
+        self.conn.commit()
+        return cur.lastrowid
+
+    def get_service_log_entry(self, log_id):
+        return self.conn.execute(
+            "SELECT * FROM service_log WHERE id=?", (log_id,)
+        ).fetchone()
+
+    def update_service_log(self, log_id, data):
+        self.conn.execute("""
+            UPDATE service_log
+            SET vehicle_id=:vehicle_id, item_id=:item_id, service_date=:service_date,
+                mileage_at_service=:mileage_at_service, cost=:cost, shop=:shop,
+                parts=:parts, notes=:notes
+            WHERE id=:id
+        """, {**data, "id": log_id})
         self.conn.commit()
 
     def close(self):
@@ -520,14 +648,27 @@ class VehicleDialog(QDialog):
 
 
 class LogServiceDialog(QDialog):
-    def __init__(self, parent, db, vehicles, *, vehicle_id=None, item_id=None, unit="km"):
+    def __init__(self, parent, db, vehicles, *, vehicle_id=None, item_id=None, unit="km",
+                 get_resources_folder=None, entry=None):
         super().__init__(parent)
-        self.setWindowTitle("Log Service")
-        self.setMinimumWidth(420)
-        self._db   = db
-        self._unit = unit
-        self._preferred_item_id = item_id
+        self.setWindowTitle("Edit Service Entry" if entry else "Log Service")
+        self.setMinimumWidth(460)
+        self._db                    = db
+        self._unit                  = unit
+        self._get_resources_folder  = get_resources_folder
+        self._staged_images: list[str]   = []
+        self._removed_images: list[dict] = []
+        self._parts_data:    list[dict]  = []
+        if entry:
+            self._preferred_item_id = entry["item_id"]
+            vehicle_id = entry["vehicle_id"]
+        else:
+            self._preferred_item_id = item_id
         self._build_ui(vehicles, vehicle_id, unit)
+        if entry:
+            self._populate_from_entry(entry)
+        elif item_id is not None:
+            self._populate_parts_from_item(item_id)
 
     def _build_ui(self, vehicles, vehicle_id, unit):
         layout = QFormLayout(self)
@@ -560,9 +701,6 @@ class LogServiceDialog(QDialog):
 
         self.shop  = QLineEdit()
         self.shop.setPlaceholderText("Leave blank if DIY")
-        self.parts = QTextEdit()
-        self.parts.setFixedHeight(60)
-        self.parts.setPlaceholderText("Brand, part number, etc.")
         self.notes = QTextEdit()
         self.notes.setFixedHeight(60)
 
@@ -572,8 +710,66 @@ class LogServiceDialog(QDialog):
         layout.addRow(f"Odometer ({unit}):",   self.mileage)
         layout.addRow("Cost:",                  self.cost)
         layout.addRow("Shop:",                  self.shop)
-        layout.addRow("Parts:",                 self.parts)
+
+        parts_container = QWidget()
+        parts_vbox = QVBoxLayout(parts_container)
+        parts_vbox.setContentsMargins(0, 4, 0, 0)
+        parts_vbox.setSpacing(4)
+
+        parts_hdr = QHBoxLayout()
+        parts_hdr.addWidget(QLabel("Parts:"))
+        parts_hdr.addStretch()
+        for _label, _slot in [("Add", self._add_part), ("Remove", self._remove_part)]:
+            btn = QPushButton(_label)
+            btn.clicked.connect(_slot)
+            parts_hdr.addWidget(btn)
+        parts_vbox.addLayout(parts_hdr)
+
+        self._parts_table = QTableWidget()
+        self._parts_table.setColumnCount(3)
+        self._parts_table.setHorizontalHeaderLabels(["Part Name", "Part Number", "Qty"])
+        self._parts_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._parts_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._parts_table.setFixedHeight(110)
+        self._parts_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self._parts_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self._parts_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self._parts_table.verticalHeader().setVisible(False)
+        parts_vbox.addWidget(self._parts_table)
+
+        layout.addRow(parts_container)
         layout.addRow("Notes:",                 self.notes)
+
+        img_container = QWidget()
+        img_vbox = QVBoxLayout(img_container)
+        img_vbox.setContentsMargins(0, 4, 0, 0)
+        img_vbox.setSpacing(4)
+
+        att_hdr = QHBoxLayout()
+        att_hdr.addWidget(QLabel("Attachments:"))
+        att_hdr.addStretch()
+        for label, slot in [
+            ("Add",    self._add_staged_image),
+            ("Remove", self._remove_staged_image),
+            ("Open",   self._open_attachment),
+        ]:
+            btn = QPushButton(label)
+            btn.clicked.connect(slot)
+            att_hdr.addWidget(btn)
+        img_vbox.addLayout(att_hdr)
+
+        self._staged_list = QListWidget()
+        self._staged_list.setViewMode(QListWidget.ViewMode.IconMode)
+        self._staged_list.setIconSize(QSize(80, 60))
+        self._staged_list.setFixedHeight(100)
+        self._staged_list.setFlow(QListWidget.Flow.LeftToRight)
+        self._staged_list.setWrapping(False)
+        self._staged_list.setSpacing(4)
+        self._staged_list.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self._staged_list.doubleClicked.connect(self._open_attachment)
+        img_vbox.addWidget(self._staged_list)
+
+        layout.addRow(img_container)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -595,6 +791,188 @@ class LogServiceDialog(QDialog):
                 self.item_combo.setCurrentIndex(idx)
             self._preferred_item_id = None
 
+    def _add_image_item(self, img_type: str, img_id, path: str, file_type: str = 'image'):
+        if file_type == 'image':
+            pix  = QPixmap(path)
+            icon = QIcon(pix.scaled(80, 60, Qt.AspectRatioMode.KeepAspectRatio,
+                                    Qt.TransformationMode.SmoothTransformation)) if not pix.isNull() else QIcon()
+        else:
+            icon = QIcon()
+        item = QListWidgetItem(icon, os.path.basename(path))
+        item.setData(Qt.ItemDataRole.UserRole,
+                     {"type": img_type, "id": img_id, "path": path, "file_type": file_type})
+        self._staged_list.addItem(item)
+
+    def _populate_parts_from_item(self, item_id: int):
+        for p in self._db.get_maintenance_item_parts(item_id):
+            self._parts_data.append({
+                "part_id":     p["part_id"],
+                "name":        p["name"],
+                "part_number": p["part_number"] or "",
+                "quantity":    p["quantity"],
+            })
+        self._refresh_parts_table()
+
+    def _populate_parts_from_log(self, log_id: int):
+        for p in self._db.get_service_log_parts(log_id):
+            self._parts_data.append({
+                "part_id":     p["part_id"],
+                "name":        p["name"],
+                "part_number": p["part_number"] or "",
+                "quantity":    p["quantity"],
+            })
+        self._refresh_parts_table()
+
+    def _refresh_parts_table(self):
+        self._parts_table.setRowCount(len(self._parts_data))
+        for row, p in enumerate(self._parts_data):
+            self._parts_table.setItem(row, 0, QTableWidgetItem(p["name"]))
+            self._parts_table.setItem(row, 1, QTableWidgetItem(p["part_number"]))
+            qty = QTableWidgetItem(str(p["quantity"]))
+            qty.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self._parts_table.setItem(row, 2, qty)
+
+    def _add_part(self):
+        vid       = self.vehicle_combo.currentData()
+        all_parts = self._db.get_all_parts(vid)
+        if not all_parts:
+            QMessageBox.information(
+                self, "No Parts",
+                "No parts found for this vehicle. Add parts in the Parts tab first.",
+            )
+            return
+        added_ids = {p["part_id"] for p in self._parts_data}
+        available = [p for p in all_parts if p["id"] not in added_ids]
+        if not available:
+            QMessageBox.information(self, "All Parts Added",
+                                    "All available parts for this vehicle have already been added.")
+            return
+        dlg = PickPartDialog(self, available)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            part_id, quantity = dlg.get_selection()
+            part = next(p for p in all_parts if p["id"] == part_id)
+            self._parts_data.append({
+                "part_id":     part_id,
+                "name":        part["name"],
+                "part_number": part["part_number"] or "",
+                "quantity":    quantity,
+            })
+            self._refresh_parts_table()
+
+    def _remove_part(self):
+        row = self._parts_table.currentRow()
+        if row < 0 or row >= len(self._parts_data):
+            return
+        self._parts_data.pop(row)
+        self._refresh_parts_table()
+
+    def get_parts_data(self) -> list[dict]:
+        return [{"part_id": p["part_id"], "quantity": p["quantity"]} for p in self._parts_data]
+
+    def _populate_from_entry(self, entry):
+        if entry["service_date"]:
+            self.service_date.setDate(QDate.fromString(entry["service_date"], "yyyy-MM-dd"))
+        if entry["mileage_at_service"]:
+            self.mileage.setValue(km_to_unit(entry["mileage_at_service"], self._unit))
+        if entry["cost"]:
+            self.cost.setValue(entry["cost"])
+        if entry["shop"]:
+            self.shop.setText(entry["shop"])
+        if entry["notes"]:
+            self.notes.setPlainText(entry["notes"])
+        self._populate_parts_from_log(entry["id"])
+        for att in self._db.get_service_log_images(entry["id"]):
+            ft = att["file_type"] if "file_type" in att.keys() else "image"
+            self._add_image_item("existing", att["id"], att["path"], ft)
+
+    def _add_staged_image(self):
+        rf = self._get_resources_folder() if self._get_resources_folder else ""
+        if not rf:
+            QMessageBox.warning(
+                self, "No Resources Folder",
+                "Please set a Resources Folder in Settings before adding attachments.",
+            )
+            return
+        dlg = AddAttachmentDialog(self, rf)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            try:
+                dest = dlg.get_destination_path()
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Could not save attachment:\n{e}")
+                return
+            ft = _get_file_type(dest)
+            self._staged_images.append(dest)
+            self._add_image_item("staged", None, dest, ft)
+
+    def _open_attachment(self):
+        row = self._staged_list.currentRow()
+        if row < 0:
+            return
+        meta = self._staged_list.item(row).data(Qt.ItemDataRole.UserRole)
+        if not meta:
+            return
+        path = meta["path"]
+        ft   = meta.get("file_type") or _get_file_type(path)
+        if ft == "image":
+            image_paths = []
+            img_row = 0
+            for i in range(self._staged_list.count()):
+                m = self._staged_list.item(i).data(Qt.ItemDataRole.UserRole)
+                if m and m.get("file_type", "image") == "image":
+                    if m["path"] == path:
+                        img_row = len(image_paths)
+                    image_paths.append(m["path"])
+            ImageViewerDialog(self, image_paths, img_row).exec()
+        elif ft == "video":
+            if _HAS_MULTIMEDIA:
+                VideoViewerDialog(self, path).exec()
+            else:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        elif ft == "pdf":
+            if _HAS_PDF:
+                PdfViewerDialog(self, path).exec()
+            else:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        else:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def _remove_staged_image(self):
+        row = self._staged_list.currentRow()
+        if row < 0:
+            return
+        meta = self._staged_list.item(row).data(Qt.ItemDataRole.UserRole)
+        if meta and meta["type"] == "existing":
+            self._removed_images.append(meta)
+        else:
+            path = meta["path"] if meta else None
+            if path and path in self._staged_images:
+                self._staged_images.remove(path)
+            try:
+                if path:
+                    os.remove(path)
+            except OSError:
+                pass
+        self._staged_list.takeItem(row)
+
+    def reject(self):
+        for path in self._staged_images:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        self._staged_images.clear()
+        super().reject()
+
+    def get_staged_images(self) -> list[str]:
+        images = list(self._staged_images)
+        self._staged_images.clear()
+        return images
+
+    def get_removed_images(self) -> list[dict]:
+        removed = list(self._removed_images)
+        self._removed_images.clear()
+        return removed
+
     def get_data(self):
         return {
             "vehicle_id":         self.vehicle_combo.currentData(),
@@ -603,18 +981,60 @@ class LogServiceDialog(QDialog):
             "mileage_at_service": unit_to_km(self.mileage.value(), self._unit) or None,
             "cost":               self.cost.value() or None,
             "shop":               self.shop.text().strip() or None,
-            "parts":              self.parts.toPlainText().strip() or None,
+            "parts":              None,
             "notes":              self.notes.toPlainText().strip() or None,
         }
 
 
+class PickPartDialog(QDialog):
+    def __init__(self, parent, parts):
+        super().__init__(parent)
+        self.setWindowTitle("Add Part")
+        self.setMinimumWidth(320)
+        self._parts = parts
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QFormLayout(self)
+        self._combo = QComboBox()
+        for p in self._parts:
+            label = p["name"]
+            if p["part_number"]:
+                label += f"  ({p['part_number']})"
+            self._combo.addItem(label, p["id"])
+        layout.addRow("Part:", self._combo)
+        self._qty = QSpinBox()
+        self._qty.setRange(1, 999)
+        self._qty.setValue(1)
+        layout.addRow("Quantity:", self._qty)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+
+    def get_selection(self) -> tuple[int, int]:
+        return self._combo.currentData(), self._qty.value()
+
+
 class MaintenanceItemDialog(QDialog):
-    def __init__(self, parent=None, item=None, unit="km"):
+    def __init__(self, parent=None, item=None, unit="km", db=None, get_resources_folder=None,
+                 vehicle_id=None):
         super().__init__(parent)
         self.setWindowTitle("Edit Service" if item else "Add Service")
-        self.setMinimumWidth(380)
-        self._unit = unit
+        self.setMinimumWidth(460)
+        self._unit                 = unit
+        self._db                   = db
+        self._get_resources_folder = get_resources_folder
+        self._vehicle_id           = vehicle_id
+        self._staged_files: list[str]   = []
+        self._removed_files: list[dict] = []
+        self._parts_data:   list[dict]  = []
         self._build_ui(item, unit)
+        if item and db:
+            self._populate_files(item["id"])
+            self._populate_parts(item["id"])
 
     def _build_ui(self, item, unit):
         layout = QFormLayout(self)
@@ -632,9 +1052,68 @@ class MaintenanceItemDialog(QDialog):
         self.interval_months.setSpecialValueText("None")
         self.interval_months.setValue(item["interval_months"] or 0 if item else 0)
 
-        layout.addRow("Service Name *:",           self.name)
+        layout.addRow("Service Name *:",              self.name)
         layout.addRow(f"Distance interval ({unit}):", self.interval_dist)
-        layout.addRow("Time interval (months):",   self.interval_months)
+        layout.addRow("Time interval (months):",      self.interval_months)
+
+        parts_container = QWidget()
+        parts_vbox = QVBoxLayout(parts_container)
+        parts_vbox.setContentsMargins(0, 4, 0, 0)
+        parts_vbox.setSpacing(4)
+
+        parts_hdr = QHBoxLayout()
+        parts_hdr.addWidget(QLabel("Parts:"))
+        parts_hdr.addStretch()
+        for label, slot in [("Add", self._add_part), ("Remove", self._remove_part)]:
+            btn = QPushButton(label)
+            btn.clicked.connect(slot)
+            parts_hdr.addWidget(btn)
+        parts_vbox.addLayout(parts_hdr)
+
+        self._parts_table = QTableWidget()
+        self._parts_table.setColumnCount(3)
+        self._parts_table.setHorizontalHeaderLabels(["Part Name", "Part Number", "Qty"])
+        self._parts_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._parts_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._parts_table.setFixedHeight(110)
+        self._parts_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self._parts_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self._parts_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self._parts_table.verticalHeader().setVisible(False)
+        parts_vbox.addWidget(self._parts_table)
+
+        layout.addRow(parts_container)
+
+        att_container = QWidget()
+        att_vbox = QVBoxLayout(att_container)
+        att_vbox.setContentsMargins(0, 4, 0, 0)
+        att_vbox.setSpacing(4)
+
+        att_hdr = QHBoxLayout()
+        att_hdr.addWidget(QLabel("Attachments:"))
+        att_hdr.addStretch()
+        for label, slot in [
+            ("Add",    self._add_staged_file),
+            ("Remove", self._remove_staged_file),
+            ("Open",   self._open_attachment),
+        ]:
+            btn = QPushButton(label)
+            btn.clicked.connect(slot)
+            att_hdr.addWidget(btn)
+        att_vbox.addLayout(att_hdr)
+
+        self._staged_list = QListWidget()
+        self._staged_list.setViewMode(QListWidget.ViewMode.IconMode)
+        self._staged_list.setIconSize(QSize(80, 60))
+        self._staged_list.setFixedHeight(100)
+        self._staged_list.setFlow(QListWidget.Flow.LeftToRight)
+        self._staged_list.setWrapping(False)
+        self._staged_list.setSpacing(4)
+        self._staged_list.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self._staged_list.doubleClicked.connect(self._open_attachment)
+        att_vbox.addWidget(self._staged_list)
+
+        layout.addRow(att_container)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -642,6 +1121,168 @@ class MaintenanceItemDialog(QDialog):
         buttons.accepted.connect(self._validate_and_accept)
         buttons.rejected.connect(self.reject)
         layout.addRow(buttons)
+
+    def _populate_files(self, item_id: int):
+        for f in self._db.get_maintenance_item_files(item_id):
+            ft = f["file_type"] if "file_type" in f.keys() else "image"
+            self._add_file_item("existing", f["id"], f["path"], ft)
+
+    def _populate_parts(self, item_id: int):
+        for p in self._db.get_maintenance_item_parts(item_id):
+            self._parts_data.append({
+                "part_id":     p["part_id"],
+                "name":        p["name"],
+                "part_number": p["part_number"] or "",
+                "quantity":    p["quantity"],
+            })
+        self._refresh_parts_table()
+
+    def _refresh_parts_table(self):
+        self._parts_table.setRowCount(len(self._parts_data))
+        for row, p in enumerate(self._parts_data):
+            self._parts_table.setItem(row, 0, QTableWidgetItem(p["name"]))
+            self._parts_table.setItem(row, 1, QTableWidgetItem(p["part_number"]))
+            qty = QTableWidgetItem(str(p["quantity"]))
+            qty.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self._parts_table.setItem(row, 2, qty)
+
+    def _add_part(self):
+        if not self._db:
+            return
+        all_parts = self._db.get_all_parts(self._vehicle_id)
+        if not all_parts:
+            QMessageBox.information(
+                self, "No Parts",
+                "No parts found for this vehicle. Add parts in the Parts tab first.",
+            )
+            return
+        added_ids = {p["part_id"] for p in self._parts_data}
+        available = [p for p in all_parts if p["id"] not in added_ids]
+        if not available:
+            QMessageBox.information(self, "All Parts Added",
+                                    "All available parts for this vehicle have already been added.")
+            return
+        dlg = PickPartDialog(self, available)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            part_id, quantity = dlg.get_selection()
+            part = next(p for p in all_parts if p["id"] == part_id)
+            self._parts_data.append({
+                "part_id":     part_id,
+                "name":        part["name"],
+                "part_number": part["part_number"] or "",
+                "quantity":    quantity,
+            })
+            self._refresh_parts_table()
+
+    def _remove_part(self):
+        row = self._parts_table.currentRow()
+        if row < 0 or row >= len(self._parts_data):
+            return
+        self._parts_data.pop(row)
+        self._refresh_parts_table()
+
+    def get_parts_data(self) -> list[dict]:
+        return [{"part_id": p["part_id"], "quantity": p["quantity"]} for p in self._parts_data]
+
+    def _add_file_item(self, tag: str, file_id, path: str, file_type: str = 'image'):
+        if file_type == 'image':
+            pix  = QPixmap(path)
+            icon = QIcon(pix.scaled(80, 60, Qt.AspectRatioMode.KeepAspectRatio,
+                                    Qt.TransformationMode.SmoothTransformation)) if not pix.isNull() else QIcon()
+        else:
+            icon = QIcon()
+        it = QListWidgetItem(icon, os.path.basename(path))
+        it.setData(Qt.ItemDataRole.UserRole,
+                   {"type": tag, "id": file_id, "path": path, "file_type": file_type})
+        self._staged_list.addItem(it)
+
+    def _add_staged_file(self):
+        rf = self._get_resources_folder() if self._get_resources_folder else ""
+        if not rf:
+            QMessageBox.warning(
+                self, "No Resources Folder",
+                "Please set a Resources Folder in Settings before adding attachments.",
+            )
+            return
+        dlg = AddAttachmentDialog(self, rf)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            try:
+                dest = dlg.get_destination_path()
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Could not save attachment:\n{e}")
+                return
+            ft = _get_file_type(dest)
+            self._staged_files.append(dest)
+            self._add_file_item("staged", None, dest, ft)
+
+    def _open_attachment(self):
+        row = self._staged_list.currentRow()
+        if row < 0:
+            return
+        meta = self._staged_list.item(row).data(Qt.ItemDataRole.UserRole)
+        if not meta:
+            return
+        path = meta["path"]
+        ft   = meta.get("file_type") or _get_file_type(path)
+        if ft == "image":
+            image_paths = []
+            img_row = 0
+            for i in range(self._staged_list.count()):
+                m = self._staged_list.item(i).data(Qt.ItemDataRole.UserRole)
+                if m and m.get("file_type", "image") == "image":
+                    if m["path"] == path:
+                        img_row = len(image_paths)
+                    image_paths.append(m["path"])
+            ImageViewerDialog(self, image_paths, img_row).exec()
+        elif ft == "video":
+            if _HAS_MULTIMEDIA:
+                VideoViewerDialog(self, path).exec()
+            else:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        elif ft == "pdf":
+            if _HAS_PDF:
+                PdfViewerDialog(self, path).exec()
+            else:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        else:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def _remove_staged_file(self):
+        row = self._staged_list.currentRow()
+        if row < 0:
+            return
+        meta = self._staged_list.item(row).data(Qt.ItemDataRole.UserRole)
+        if meta and meta["type"] == "existing":
+            self._removed_files.append(meta)
+        else:
+            path = meta["path"] if meta else None
+            if path and path in self._staged_files:
+                self._staged_files.remove(path)
+            try:
+                if path:
+                    os.remove(path)
+            except OSError:
+                pass
+        self._staged_list.takeItem(row)
+
+    def reject(self):
+        for path in self._staged_files:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        self._staged_files.clear()
+        super().reject()
+
+    def get_staged_files(self) -> list[str]:
+        files = list(self._staged_files)
+        self._staged_files.clear()
+        return files
+
+    def get_removed_files(self) -> list[dict]:
+        removed = list(self._removed_files)
+        self._removed_files.clear()
+        return removed
 
     def _validate_and_accept(self):
         if not self.name.text().strip():
@@ -812,6 +1453,145 @@ class ImageViewerDialog(QDialog):
             super().keyPressEvent(event)
 
 
+# ── video viewer dialog ───────────────────────────────────────────────────────
+
+class VideoViewerDialog(QDialog):
+    def __init__(self, parent, path: str):
+        super().__init__(parent)
+        self.setWindowTitle(os.path.basename(path))
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint)
+        self._path = path
+        self._build_ui()
+        self.resize(860, 560)
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+
+        self._video_widget = QVideoWidget()
+        layout.addWidget(self._video_widget)
+
+        self._player = QMediaPlayer(self)
+        self._audio  = QAudioOutput(self)
+        self._player.setAudioOutput(self._audio)
+        self._player.setVideoOutput(self._video_widget)
+        self._player.setSource(QUrl.fromLocalFile(self._path))
+
+        controls = QHBoxLayout()
+
+        self._play_btn = QPushButton("▶ Play")
+        self._play_btn.setFixedWidth(80)
+        self._play_btn.clicked.connect(self._toggle_play)
+        controls.addWidget(self._play_btn)
+
+        self._slider = QSlider(Qt.Orientation.Horizontal)
+        self._slider.setRange(0, 0)
+        self._slider.sliderMoved.connect(self._player.setPosition)
+        controls.addWidget(self._slider)
+
+        self._time_label = QLabel("0:00 / 0:00")
+        self._time_label.setFixedWidth(90)
+        self._time_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        controls.addWidget(self._time_label)
+
+        layout.addLayout(controls)
+
+        self._player.playbackStateChanged.connect(self._on_state_changed)
+        self._player.durationChanged.connect(self._on_duration_changed)
+        self._player.positionChanged.connect(self._on_position_changed)
+        self._player.play()
+
+    @staticmethod
+    def _fmt_ms(ms: int) -> str:
+        s = ms // 1000
+        return f"{s // 60}:{s % 60:02d}"
+
+    def _toggle_play(self):
+        if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self._player.pause()
+        else:
+            self._player.play()
+
+    def _on_state_changed(self, state):
+        playing = state == QMediaPlayer.PlaybackState.PlayingState
+        self._play_btn.setText("⏸ Pause" if playing else "▶ Play")
+
+    def _on_duration_changed(self, duration: int):
+        self._slider.setRange(0, duration)
+        self._update_time()
+
+    def _on_position_changed(self, position: int):
+        if not self._slider.isSliderDown():
+            self._slider.setValue(position)
+        self._update_time()
+
+    def _update_time(self):
+        self._time_label.setText(
+            f"{self._fmt_ms(self._player.position())} / {self._fmt_ms(self._player.duration())}"
+        )
+
+    def closeEvent(self, event):
+        self._player.stop()
+        super().closeEvent(event)
+
+
+# ── pdf viewer dialog ─────────────────────────────────────────────────────────
+
+class PdfViewerDialog(QDialog):
+    _ZOOM_STEP = 1.25
+
+    def __init__(self, parent, path: str):
+        super().__init__(parent)
+        self.setWindowTitle(os.path.basename(path))
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint)
+        self._zoom = 1.0
+        self._build_ui(path)
+        self.resize(800, 960)
+
+    def _build_ui(self, path: str):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+
+        self._doc = QPdfDocument(self)
+        self._doc.load(path)
+
+        self._view = QPdfView(self)
+        self._view.setDocument(self._doc)
+        self._view.setPageMode(QPdfView.PageMode.MultiPage)
+        self._view.setZoomMode(QPdfView.ZoomMode.Custom)
+        self._view.setZoomFactor(self._zoom)
+        layout.addWidget(self._view)
+
+        bar = QHBoxLayout()
+        bar.addStretch()
+        zoom_out = QPushButton("−")
+        zoom_out.setFixedWidth(28)
+        zoom_out.clicked.connect(self._zoom_out)
+        self._zoom_label = QLabel("100%")
+        self._zoom_label.setFixedWidth(52)
+        self._zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        zoom_in = QPushButton("+")
+        zoom_in.setFixedWidth(28)
+        zoom_in.clicked.connect(self._zoom_in)
+        bar.addWidget(zoom_out)
+        bar.addWidget(self._zoom_label)
+        bar.addWidget(zoom_in)
+        layout.addLayout(bar)
+
+    def _zoom_in(self):
+        self._set_zoom(self._zoom * self._ZOOM_STEP)
+
+    def _zoom_out(self):
+        self._set_zoom(self._zoom / self._ZOOM_STEP)
+
+    def _set_zoom(self, factor: float):
+        self._zoom = max(0.1, min(factor, 5.0))
+        self._view.setZoomFactor(self._zoom)
+        self._zoom_label.setText(f"{round(self._zoom * 100)}%")
+
+
 # ── add image dialog ─────────────────────────────────────────────────────────
 
 class AddImageDialog(QDialog):
@@ -892,6 +1672,41 @@ class AddImageDialog(QDialog):
         if os.path.abspath(dest_path) != os.path.abspath(self._source_path):
             shutil.copy2(self._source_path, dest_path)
         return dest_path
+
+
+_ATTACHMENT_FILTER = (
+    "All Supported (*.png *.jpg *.jpeg *.gif *.bmp *.webp "
+    "*.mp4 *.avi *.mov *.mkv *.wmv *.m4v *.webm *.mpeg *.mpg *.pdf);;"
+    "Images (*.png *.jpg *.jpeg *.gif *.bmp *.webp);;"
+    "Videos (*.mp4 *.avi *.mov *.mkv *.wmv *.m4v *.webm *.mpeg *.mpg);;"
+    "PDF Documents (*.pdf)"
+)
+
+
+class AddAttachmentDialog(AddImageDialog):
+    """Like AddImageDialog but accepts images, videos, and PDFs."""
+
+    def __init__(self, parent, resources_folder: str):
+        super().__init__(parent, resources_folder)
+        self.setWindowTitle("Add Attachment")
+
+    def _build_ui(self):
+        super()._build_ui()
+        layout = self.layout()
+        for i in range(layout.rowCount()):
+            label = layout.itemAt(i, QFormLayout.ItemRole.LabelRole)
+            if label and label.widget() and label.widget().text() == "Image File *:":
+                label.widget().setText("Select File *:")
+                break
+
+    def _browse_source(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Attachment", "", _ATTACHMENT_FILTER,
+        )
+        if path:
+            self._source_path = path
+            self._src_edit.setText(path)
+            self._filename_edit.setText(os.path.basename(path))
 
 
 # ── garage tab ──────────────────────────────────────────────────────────────
@@ -1094,12 +1909,15 @@ class GarageTab(QWidget):
 # ── schedule tab ─────────────────────────────────────────────────────────────
 
 class ScheduleTab(QWidget):
-    def __init__(self, db: DatabaseManager, get_unit):
+    def __init__(self, db: DatabaseManager, get_unit, on_service_logged, get_resources_folder):
         super().__init__()
-        self.db       = db
-        self.get_unit = get_unit
-        self._vehicle_id: int | None = None
-        self._item_ids:   list[int]  = []
+        self.db                    = db
+        self.get_unit              = get_unit
+        self._on_service_logged    = on_service_logged
+        self._get_resources_folder = get_resources_folder
+        self._vehicle_id:   int | None = None
+        self._item_ids:     list[int]  = []
+        self._last_entries: list       = []
         self._build_ui()
 
     def _build_ui(self):
@@ -1123,6 +1941,7 @@ class ScheduleTab(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.doubleClicked.connect(self._edit_or_log_selected)
         layout.addWidget(self.table)
 
     def set_vehicle(self, vehicle_id: int | None):
@@ -1150,8 +1969,9 @@ class ScheduleTab(QWidget):
         )
         self.log_btn.setEnabled(True)
 
-        rows           = self.db.get_schedule(self._vehicle_id)
-        self._item_ids = [item["id"] for item, _, _ in rows]
+        rows               = self.db.get_schedule(self._vehicle_id)
+        self._item_ids     = [item["id"] for item, _, _ in rows]
+        self._last_entries = [last for _, last, _ in rows]
         self.table.setRowCount(len(rows))
 
         for row, (item, last, v) in enumerate(rows):
@@ -1192,21 +2012,59 @@ class ScheduleTab(QWidget):
             vehicle_id=self._vehicle_id,
             item_id=self._selected_item_id(),
             unit=self.get_unit(),
+            get_resources_folder=self._get_resources_folder,
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            self.db.log_service(dlg.get_data())
-            self.refresh()
+            entry_id = self.db.log_service(dlg.get_data())
+            for path in dlg.get_staged_images():
+                self.db.add_service_log_image(entry_id, path, _get_file_type(path))
+            self.db.set_service_log_parts(entry_id, dlg.get_parts_data())
+            self._on_service_logged()
+
+    def _edit_or_log_selected(self):
+        row = self.table.currentRow()
+        if row < 0 or self._vehicle_id is None:
+            return
+        last = self._last_entries[row] if row < len(self._last_entries) else None
+        if last is None:
+            self._log_service()
+            return
+        entry = self.db.get_service_log_entry(last["id"])
+        dlg = LogServiceDialog(
+            self,
+            self.db,
+            self.db.get_all_vehicles(),
+            unit=self.get_unit(),
+            get_resources_folder=self._get_resources_folder,
+            entry=entry,
+        )
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.db.update_service_log(last["id"], dlg.get_data())
+            for img in dlg.get_removed_images():
+                self.db.delete_service_log_image(img["id"])
+                try:
+                    os.remove(img["path"])
+                except OSError:
+                    pass
+            for path in dlg.get_staged_images():
+                self.db.add_service_log_image(last["id"], path, _get_file_type(path))
+            self.db.set_service_log_parts(last["id"], dlg.get_parts_data())
+            self._on_service_logged()
 
 
 # ── services tab ─────────────────────────────────────────────────────────────
 
 class ServicesTab(QWidget):
-    def __init__(self, db: DatabaseManager, get_unit):
+    def __init__(self, db: DatabaseManager, get_unit, get_resources_folder=None):
         super().__init__()
-        self.db          = db
-        self.get_unit    = get_unit
+        self.db                    = db
+        self.get_unit              = get_unit
+        self.get_resources_folder  = get_resources_folder
         self._vehicle_id: int | None = None
         self._item_ids:   list[int]  = []
+        self._file_ids:   list[int]  = []
+        self._file_paths: list[str]  = []
+        self._file_types: list[str]  = []
         self._build_ui()
         self.refresh()
 
@@ -1236,7 +2094,32 @@ class ServicesTab(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.doubleClicked.connect(self._edit_item)
+        self.table.currentCellChanged.connect(lambda row, *_: self._row_changed(row))
         layout.addWidget(self.table)
+
+        att_hdr = QHBoxLayout()
+        att_hdr.addWidget(QLabel("Attachments:"))
+        att_hdr.addStretch()
+        for label, slot in [
+            ("Add",    self._add_attachment),
+            ("Remove", self._remove_attachment),
+            ("Open",   self._open_attachment),
+        ]:
+            btn = QPushButton(label)
+            btn.clicked.connect(slot)
+            att_hdr.addWidget(btn)
+        layout.addLayout(att_hdr)
+
+        self._file_list = QListWidget()
+        self._file_list.setViewMode(QListWidget.ViewMode.IconMode)
+        self._file_list.setIconSize(QSize(100, 75))
+        self._file_list.setFixedHeight(130)
+        self._file_list.setFlow(QListWidget.Flow.LeftToRight)
+        self._file_list.setWrapping(False)
+        self._file_list.setSpacing(4)
+        self._file_list.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self._file_list.doubleClicked.connect(self._open_attachment)
+        layout.addWidget(self._file_list)
 
     def set_vehicle(self, vehicle_id: int | None):
         self._vehicle_id = vehicle_id
@@ -1252,6 +2135,7 @@ class ServicesTab(QWidget):
             self.table.setRowCount(0)
             self._item_ids = []
             self.vehicle_label.setText("Select a vehicle in the Garage tab to manage its services.")
+            self._load_files(None)
             return
 
         vehicle = self.db.get_vehicle(self._vehicle_id)
@@ -1271,16 +2155,108 @@ class ServicesTab(QWidget):
                     cell.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self.table.setItem(row, col, cell)
 
+        self._load_files(self._selected_id())
+
     def _selected_id(self) -> int | None:
         row = self.table.currentRow()
-        return self._item_ids[row] if row >= 0 else None
+        return self._item_ids[row] if 0 <= row < len(self._item_ids) else None
+
+    def _row_changed(self, row):
+        self._load_files(self._item_ids[row] if 0 <= row < len(self._item_ids) else None)
+
+    def _load_files(self, item_id: int | None):
+        self._file_ids   = []
+        self._file_paths = []
+        self._file_types = []
+        self._file_list.clear()
+        if item_id is None:
+            return
+        for f in self.db.get_maintenance_item_files(item_id):
+            self._file_ids.append(f["id"])
+            self._file_paths.append(f["path"])
+            self._file_types.append(f["file_type"])
+            if f["file_type"] == "image":
+                pix  = QPixmap(f["path"])
+                icon = QIcon(pix.scaled(100, 75, Qt.AspectRatioMode.KeepAspectRatio,
+                                        Qt.TransformationMode.SmoothTransformation)) if not pix.isNull() else QIcon()
+            else:
+                icon = QIcon()
+            self._file_list.addItem(QListWidgetItem(icon, os.path.basename(f["path"])))
+
+    def _add_attachment(self):
+        rf = self.get_resources_folder() if self.get_resources_folder else ""
+        if not rf:
+            QMessageBox.warning(
+                self, "No Resources Folder",
+                "Please set a Resources Folder in Settings before adding attachments.",
+            )
+            return
+        iid = self._selected_id()
+        if iid is None:
+            QMessageBox.information(self, "No Service Selected", "Select a service before adding an attachment.")
+            return
+        dlg = AddAttachmentDialog(self, rf)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            try:
+                dest = dlg.get_destination_path()
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Could not save attachment:\n{e}")
+                return
+            self.db.add_maintenance_item_file(iid, dest, _get_file_type(dest))
+            self._load_files(iid)
+
+    def _remove_attachment(self):
+        row = self._file_list.currentRow()
+        if row < 0 or row >= len(self._file_ids):
+            return
+        path = self._file_paths[row]
+        if QMessageBox.question(
+            self, "Remove Attachment",
+            f"Delete '{os.path.basename(path)}' from the Resources folder and remove it from this service?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        ) == QMessageBox.StandardButton.Yes:
+            self.db.delete_maintenance_item_file(self._file_ids[row])
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            self._load_files(self._selected_id())
+
+    def _open_attachment(self):
+        row = self._file_list.currentRow()
+        if row < 0 or row >= len(self._file_paths):
+            return
+        path = self._file_paths[row]
+        ft   = self._file_types[row] if row < len(self._file_types) else _get_file_type(path)
+        if ft == "image":
+            image_paths = [p for p, t in zip(self._file_paths, self._file_types) if t == "image"]
+            img_row     = self._file_types[:row].count("image")
+            ImageViewerDialog(self, image_paths, img_row).exec()
+        elif ft == "video":
+            if _HAS_MULTIMEDIA:
+                VideoViewerDialog(self, path).exec()
+            else:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        elif ft == "pdf":
+            if _HAS_PDF:
+                PdfViewerDialog(self, path).exec()
+            else:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        else:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
     def _add_item(self):
         if self._vehicle_id is None:
             return
-        dlg = MaintenanceItemDialog(self, unit=self.get_unit())
+        dlg = MaintenanceItemDialog(self, unit=self.get_unit(),
+                                    db=self.db,
+                                    get_resources_folder=self.get_resources_folder,
+                                    vehicle_id=self._vehicle_id)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            self.db.add_maintenance_item(self._vehicle_id, dlg.get_data())
+            item_id = self.db.add_maintenance_item(self._vehicle_id, dlg.get_data())
+            for path in dlg.get_staged_files():
+                self.db.add_maintenance_item_file(item_id, path, _get_file_type(path))
+            self.db.set_maintenance_item_parts(item_id, dlg.get_parts_data())
             self.refresh()
 
     def _edit_item(self):
@@ -1288,9 +2264,21 @@ class ServicesTab(QWidget):
         if iid is None:
             return
         items = {item["id"]: item for item in self.db.get_maintenance_items(self._vehicle_id)}
-        dlg = MaintenanceItemDialog(self, items[iid], unit=self.get_unit())
+        dlg = MaintenanceItemDialog(self, items[iid], unit=self.get_unit(),
+                                    db=self.db,
+                                    get_resources_folder=self.get_resources_folder,
+                                    vehicle_id=self._vehicle_id)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self.db.update_maintenance_item(iid, dlg.get_data())
+            for f in dlg.get_removed_files():
+                self.db.delete_maintenance_item_file(f["id"])
+                try:
+                    os.remove(f["path"])
+                except OSError:
+                    pass
+            for path in dlg.get_staged_files():
+                self.db.add_maintenance_item_file(iid, path, _get_file_type(path))
+            self.db.set_maintenance_item_parts(iid, dlg.get_parts_data())
             self.refresh()
 
     def _delete_item(self):
@@ -1316,15 +2304,17 @@ class ServicesTab(QWidget):
 # ── service log tab ──────────────────────────────────────────────────────────
 
 class ServiceLogTab(QWidget):
-    def __init__(self, db: DatabaseManager, get_unit, get_resources_folder):
+    def __init__(self, db: DatabaseManager, get_unit, get_resources_folder, on_service_logged):
         super().__init__()
         self.db = db
         self.get_unit = get_unit
         self.get_resources_folder = get_resources_folder
+        self._on_service_logged = on_service_logged
         self._vehicle_id:  int | None = None
         self._log_ids:     list[int]  = []
         self._image_ids:   list[int]  = []
         self._image_paths: list[str]  = []
+        self._file_types:  list[str]  = []
         self._build_ui()
 
     def _build_ui(self):
@@ -1335,6 +2325,9 @@ class ServiceLogTab(QWidget):
         self.vehicle_label = QLabel("Select a vehicle in the Garage tab to view its service log.")
         top_row.addWidget(self.vehicle_label)
         top_row.addStretch()
+        edit_btn = QPushButton("Edit Entry")
+        edit_btn.clicked.connect(self._edit_entry)
+        top_row.addWidget(edit_btn)
         log_btn = QPushButton("Log Service")
         log_btn.clicked.connect(self._log_service)
         top_row.addWidget(log_btn)
@@ -1348,15 +2341,16 @@ class ServiceLogTab(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.currentCellChanged.connect(lambda row, *_: self._row_changed(row))
+        self.table.doubleClicked.connect(self._edit_entry)
         layout.addWidget(self.table)
 
         img_hdr = QHBoxLayout()
-        img_hdr.addWidget(QLabel("Images:"))
+        img_hdr.addWidget(QLabel("Attachments:"))
         img_hdr.addStretch()
         for label, slot in [
-            ("Add Image", self._add_image),
-            ("Remove",    self._remove_image),
-            ("Open",      self._open_image),
+            ("Add",    self._add_attachment),
+            ("Remove", self._remove_attachment),
+            ("Open",   self._open_attachment),
         ]:
             btn = QPushButton(label)
             btn.clicked.connect(slot)
@@ -1371,7 +2365,7 @@ class ServiceLogTab(QWidget):
         self._image_list.setWrapping(False)
         self._image_list.setSpacing(4)
         self._image_list.setResizeMode(QListWidget.ResizeMode.Adjust)
-        self._image_list.doubleClicked.connect(self._open_image)
+        self._image_list.doubleClicked.connect(self._open_attachment)
         layout.addWidget(self._image_list)
 
     def set_vehicle(self, vehicle_id: int | None):
@@ -1422,50 +2416,55 @@ class ServiceLogTab(QWidget):
     def _load_images(self, log_id: int | None):
         self._image_ids   = []
         self._image_paths = []
+        self._file_types  = []
         self._image_list.clear()
         if log_id is None:
             return
-        images = self.db.get_service_log_images(log_id)
-        self._image_ids   = [img["id"]   for img in images]
-        self._image_paths = [img["path"] for img in images]
-        for path in self._image_paths:
-            pix = QPixmap(path)
-            icon = QIcon(pix.scaled(
-                100, 75,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )) if not pix.isNull() else QIcon()
+        attachments = self.db.get_service_log_images(log_id)
+        self._image_ids   = [a["id"]        for a in attachments]
+        self._image_paths = [a["path"]       for a in attachments]
+        self._file_types  = [a["file_type"]  for a in attachments]
+        for path, ft in zip(self._image_paths, self._file_types):
+            if ft == "image":
+                pix  = QPixmap(path)
+                icon = QIcon(pix.scaled(
+                    100, 75,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )) if not pix.isNull() else QIcon()
+            else:
+                icon = QIcon()
             self._image_list.addItem(QListWidgetItem(icon, os.path.basename(path)))
 
-    def _add_image(self):
+    def _add_attachment(self):
         resources_folder = self.get_resources_folder()
         if not resources_folder:
             QMessageBox.warning(
                 self, "No Resources Folder",
-                "Please set a Resources Folder in Settings before adding images.",
+                "Please set a Resources Folder in Settings before adding attachments.",
             )
             return
         lid = self._selected_log_id()
         if lid is None:
-            QMessageBox.information(self, "No Entry Selected", "Select a service log entry before adding an image.")
+            QMessageBox.information(self, "No Entry Selected", "Select a service log entry before adding an attachment.")
             return
-        dlg = AddImageDialog(self, resources_folder)
+        dlg = AddAttachmentDialog(self, resources_folder)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             try:
                 dest = dlg.get_destination_path()
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Could not save image:\n{e}")
+                QMessageBox.critical(self, "Error", f"Could not save attachment:\n{e}")
                 return
-            self.db.add_service_log_image(lid, dest)
+            self.db.add_service_log_image(lid, dest, _get_file_type(dest))
             self._load_images(lid)
 
-    def _remove_image(self):
+    def _remove_attachment(self):
         row = self._image_list.currentRow()
         if row < 0 or row >= len(self._image_ids):
             return
         path = self._image_paths[row]
         if QMessageBox.question(
-            self, "Remove Image",
+            self, "Remove Attachment",
             f"Delete '{os.path.basename(path)}' from the Resources folder and remove it from this entry?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         ) == QMessageBox.StandardButton.Yes:
@@ -1476,11 +2475,55 @@ class ServiceLogTab(QWidget):
                 pass
             self._load_images(self._selected_log_id())
 
-    def _open_image(self):
+    def _open_attachment(self):
         row = self._image_list.currentRow()
-        if row < 0 or not self._image_paths:
+        if row < 0 or row >= len(self._image_paths):
             return
-        ImageViewerDialog(self, self._image_paths, row).exec()
+        path = self._image_paths[row]
+        ft   = self._file_types[row] if row < len(self._file_types) else _get_file_type(path)
+        if ft == "image":
+            image_paths = [p for p, t in zip(self._image_paths, self._file_types) if t == "image"]
+            img_row     = self._file_types[:row].count("image")
+            ImageViewerDialog(self, image_paths, img_row).exec()
+        elif ft == "video":
+            if _HAS_MULTIMEDIA:
+                VideoViewerDialog(self, path).exec()
+            else:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        elif ft == "pdf":
+            if _HAS_PDF:
+                PdfViewerDialog(self, path).exec()
+            else:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        else:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def _edit_entry(self):
+        lid = self._selected_log_id()
+        if lid is None:
+            return
+        entry = self.db.get_service_log_entry(lid)
+        dlg = LogServiceDialog(
+            self,
+            self.db,
+            self.db.get_all_vehicles(),
+            vehicle_id=self._vehicle_id,
+            unit=self.get_unit(),
+            get_resources_folder=self.get_resources_folder,
+            entry=entry,
+        )
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.db.update_service_log(lid, dlg.get_data())
+            for img in dlg.get_removed_images():
+                self.db.delete_service_log_image(img["id"])
+                try:
+                    os.remove(img["path"])
+                except OSError:
+                    pass
+            for path in dlg.get_staged_images():
+                self.db.add_service_log_image(lid, path, _get_file_type(path))
+            self.db.set_service_log_parts(lid, dlg.get_parts_data())
+            self._on_service_logged()
 
     def _log_service(self):
         dlg = LogServiceDialog(
@@ -1489,10 +2532,14 @@ class ServiceLogTab(QWidget):
             self.db.get_all_vehicles(),
             vehicle_id=self._vehicle_id,
             unit=self.get_unit(),
+            get_resources_folder=self.get_resources_folder,
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            self.db.log_service(dlg.get_data())
-            self.refresh()
+            entry_id = self.db.log_service(dlg.get_data())
+            for path in dlg.get_staged_images():
+                self.db.add_service_log_image(entry_id, path, _get_file_type(path))
+            self.db.set_service_log_parts(entry_id, dlg.get_parts_data())
+            self._on_service_logged()
 
 
 # ── parts tab ────────────────────────────────────────────────────────────────
@@ -1811,13 +2858,19 @@ class VehicleApp(QMainWindow):
             lambda: self.unit,
             lambda: self.settings.value("resources_folder", ""),
         )
-        self.schedule_tab  = ScheduleTab(self.db, lambda: self.unit)
+        self.schedule_tab  = ScheduleTab(
+            self.db, lambda: self.unit,
+            self._on_service_logged,
+            lambda: self.settings.value("resources_folder", ""),
+        )
         self.log_tab       = ServiceLogTab(
             self.db,
             lambda: self.unit,
             lambda: self.settings.value("resources_folder", ""),
+            self._on_service_logged,
         )
-        self.services_tab  = ServicesTab(self.db, lambda: self.unit)
+        self.services_tab  = ServicesTab(self.db, lambda: self.unit,
+                                         lambda: self.settings.value("resources_folder", ""))
         self.parts_tab     = PartsTab(self.db)
         self.settings_tab  = SettingsTab(
             self._apply_theme, self._apply_unit,
@@ -1850,6 +2903,10 @@ class VehicleApp(QMainWindow):
         self.schedule_tab.refresh()
         self.log_tab.refresh()
         self.services_tab.refresh()
+
+    def _on_service_logged(self):
+        self.schedule_tab.refresh()
+        self.log_tab.refresh()
 
     def _on_vehicle_selected(self, vehicle_id: int | None):
         self.schedule_tab.set_vehicle(vehicle_id)
