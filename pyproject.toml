@@ -5,4 +5,5 @@ description = "Vehicle maintenance log"
 requires-python = ">=3.14"
 dependencies = [
     "pyside6>=6.11.0",
+    "qtawesome>=1.4.2",
 ]

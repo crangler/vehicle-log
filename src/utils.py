@@ -3,7 +3,8 @@ import calendar
 import sqlite3
 from datetime import date
 
-from PySide6.QtGui import QColor
+import qtawesome as qta
+from PySide6.QtGui import QColor, QIcon
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -32,6 +33,22 @@ def add_months(d: date, months: int) -> date:
     month = month % 12 + 1
     day = min(d.day, calendar.monthrange(year, month)[1])
     return date(year, month, day)
+
+
+ICON_COLORS: dict[str, str] = {
+    "fa5s.car":             "#5b9bd5",
+    "fa5s.calendar-check":  "#5cb85c",
+    "fa5s.history":         "#c9a84c",
+    "fa5s.tools":           "#e07b54",
+    "fa5s.puzzle-piece":    "#a770c0",
+    "fa5s.cog":             "#8e9eab",
+    "fa5s.paperclip":       "#6aabb8",
+    "fa5s.file-alt":        "#7aab6e",
+}
+
+
+def app_icon(name: str) -> QIcon:
+    return qta.icon(name, color=ICON_COLORS.get(name, "#8e9eab"))
 
 
 KM_PER_MI = 1.60934

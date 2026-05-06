@@ -1,6 +1,8 @@
 import os
 from collections.abc import Callable
 
+from src.utils import app_icon
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QHeaderView, QLabel, QPushButton, QListWidget, QListWidgetItem,
@@ -235,6 +237,7 @@ class ServiceLogTab(QWidget):
             unit=self.get_unit(),
             get_resources_folder=self.get_resources_folder,
             entry=entry,
+            window_icon=app_icon("fa5s.history"),
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self.db.update_service_log(lid, dlg.get_data())
@@ -257,6 +260,7 @@ class ServiceLogTab(QWidget):
             vehicle_id=self._vehicle_id,
             unit=self.get_unit(),
             get_resources_folder=self.get_resources_folder,
+            window_icon=app_icon("fa5s.history"),
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:
             entry_id = self.db.log_service(dlg.get_data())

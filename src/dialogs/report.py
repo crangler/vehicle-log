@@ -1,5 +1,6 @@
 from datetime import date as _date
 
+from src.utils import app_icon
 from PySide6.QtWidgets import (
     QDialog, QFormLayout, QVBoxLayout, QHBoxLayout, QDialogButtonBox,
     QMessageBox, QPushButton, QDateEdit, QTextBrowser, QFileDialog,
@@ -186,6 +187,7 @@ class ReportOptionsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Generate Service Report")
+        self.setWindowIcon(app_icon("fa5s.file-alt"))
         self.setMinimumWidth(300)
         layout = QFormLayout(self)
 
@@ -229,6 +231,7 @@ class ServiceReportDialog(QDialog):
                  date_from: str = "", date_to: str = ""):
         super().__init__(parent)
         self.setWindowTitle(f"Service Report — {vehicle_name}")
+        self.setWindowIcon(app_icon("fa5s.file-alt"))
         self.setMinimumSize(740, 560)
         self.resize(820, 640)
         self._html = html

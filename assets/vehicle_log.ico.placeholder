@@ -1,0 +1,4 @@
+Place your vehicle_log.ico file in this directory.
+The app loads: assets/vehicle_log.ico
+Recommended sizes inside the .ico: 16, 32, 48, 256 px.
+Delete this placeholder file once the .ico is in place.

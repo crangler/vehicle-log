@@ -1,6 +1,8 @@
 import os
 import shutil
 
+from src.utils import app_icon
+
 from PySide6.QtWidgets import (
     QDialog, QFormLayout, QLineEdit, QPushButton, QComboBox,
     QDialogButtonBox, QMessageBox, QHBoxLayout, QFileDialog,
@@ -122,6 +124,7 @@ class AddAttachmentDialog(AddImageDialog):
     def __init__(self, parent, resources_folder: str):
         super().__init__(parent, resources_folder)
         self.setWindowTitle("Add Attachment")
+        self.setWindowIcon(app_icon("fa5s.paperclip"))
 
     def _build_ui(self):
         super()._build_ui()

@@ -17,9 +17,11 @@ from src.dialogs.viewers import _open_file
 
 class PartDialog(QDialog):
     def __init__(self, parent=None, part=None, vehicles=None, default_vehicle_id=None,
-                 db=None, get_resources_folder=None):
+                 db=None, get_resources_folder=None, window_icon=None):
         super().__init__(parent)
         self.setWindowTitle("Edit Part" if part else "Add Part")
+        if window_icon is not None:
+            self.setWindowIcon(window_icon)
         self.setMinimumWidth(460)
         self._db = db
         self._get_resources_folder = get_resources_folder

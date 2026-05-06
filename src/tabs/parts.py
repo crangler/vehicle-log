@@ -1,5 +1,6 @@
 import os
 
+from src.utils import app_icon
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QHeaderView, QLabel, QPushButton, QDialog, QMessageBox,
@@ -116,6 +117,7 @@ class PartsTab(QWidget):
             default_vehicle_id=self._vehicle_id,
             db=self.db,
             get_resources_folder=self.get_resources_folder,
+            window_icon=app_icon("fa5s.puzzle-piece"),
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:
             part_id = self.db.add_part(dlg.get_data())
@@ -133,6 +135,7 @@ class PartsTab(QWidget):
             vehicles=self.db.get_all_vehicles(),
             db=self.db,
             get_resources_folder=self.get_resources_folder,
+            window_icon=app_icon("fa5s.puzzle-piece"),
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self.db.update_part(pid, dlg.get_data())

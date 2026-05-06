@@ -1,6 +1,8 @@
 import os
 from collections.abc import Callable
 
+from src.utils import app_icon
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QHeaderView, QLabel, QPushButton, QDialog,
@@ -133,6 +135,7 @@ class ScheduleTab(QWidget):
             item_id=self._selected_item_id(),
             unit=self.get_unit(),
             get_resources_folder=self._get_resources_folder,
+            window_icon=app_icon("fa5s.calendar-check"),
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:
             entry_id = self.db.log_service(dlg.get_data())
@@ -159,6 +162,7 @@ class ScheduleTab(QWidget):
             unit=self.get_unit(),
             get_resources_folder=self._get_resources_folder,
             entry=entry,
+            window_icon=app_icon("fa5s.calendar-check"),
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self.db.update_service_log(last["id"], dlg.get_data())

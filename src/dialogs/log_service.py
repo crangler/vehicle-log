@@ -19,9 +19,11 @@ from src.dialogs.maintenance import PickPartDialog
 
 class LogServiceDialog(QDialog):
     def __init__(self, parent, db, vehicles, *, vehicle_id=None, item_id=None, unit="km",
-                 get_resources_folder=None, entry=None):
+                 get_resources_folder=None, entry=None, window_icon=None):
         super().__init__(parent)
         self.setWindowTitle("Edit Service Entry" if entry else "Log Service")
+        if window_icon is not None:
+            self.setWindowIcon(window_icon)
         self.setMinimumWidth(460)
         self._db = db
         self._unit = unit

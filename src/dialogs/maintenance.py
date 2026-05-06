@@ -51,9 +51,11 @@ class PickPartDialog(QDialog):
 
 class MaintenanceItemDialog(QDialog):
     def __init__(self, parent=None, item=None, unit="km", db=None, get_resources_folder=None,
-                 vehicle_id=None):
+                 vehicle_id=None, window_icon=None):
         super().__init__(parent)
         self.setWindowTitle("Edit Service" if item else "Add Service")
+        if window_icon is not None:
+            self.setWindowIcon(window_icon)
         self.setMinimumWidth(460)
         self._unit = unit
         self._db = db

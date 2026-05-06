@@ -1,6 +1,8 @@
 import os
 from collections.abc import Callable
 
+from src.utils import app_icon
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QHeaderView, QLabel, QPushButton, QListWidget, QListWidgetItem,
@@ -220,7 +222,8 @@ class ServicesTab(QWidget):
         dlg = MaintenanceItemDialog(self, unit=self.get_unit(),
                                     db=self.db,
                                     get_resources_folder=self.get_resources_folder,
-                                    vehicle_id=self._vehicle_id)
+                                    vehicle_id=self._vehicle_id,
+                                    window_icon=app_icon("fa5s.tools"))
         if dlg.exec() == QDialog.DialogCode.Accepted:
             item_id = self.db.add_maintenance_item(
                 self._vehicle_id, dlg.get_data())
@@ -237,7 +240,8 @@ class ServicesTab(QWidget):
         dlg = MaintenanceItemDialog(self, self.db.get_maintenance_item(iid), unit=self.get_unit(),
                                     db=self.db,
                                     get_resources_folder=self.get_resources_folder,
-                                    vehicle_id=self._vehicle_id)
+                                    vehicle_id=self._vehicle_id,
+                                    window_icon=app_icon("fa5s.tools"))
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self.db.update_maintenance_item(iid, dlg.get_data())
             for f in dlg.get_removed_files():
