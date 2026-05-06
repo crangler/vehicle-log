@@ -2963,9 +2963,10 @@ class PartsTab(QWidget):
 # ── settings tab ─────────────────────────────────────────────────────────────
 
 class SettingsTab(QWidget):
-    def __init__(self, apply_theme, apply_unit, save_resources_folder,
+    def __init__(self, db, apply_theme, apply_unit, save_resources_folder,
                  current_theme, current_unit, current_resources_folder):
         super().__init__()
+        self._db                   = db
         self._apply_theme          = apply_theme
         self._apply_unit           = apply_unit
         self._save_resources_folder = save_resources_folder
@@ -3025,7 +3026,60 @@ class SettingsTab(QWidget):
         res_layout.addLayout(path_row)
         outer.addWidget(res_box)
 
+        # Default folders
+        folders_box    = QGroupBox("Use Default Folders")
+        folders_layout = QVBoxLayout(folders_box)
+        self._folders_yes = QRadioButton("Yes")
+        self._folders_no  = QRadioButton("No")
+        self._folders_grp = QButtonGroup(self)
+        self._folders_grp.addButton(self._folders_yes, 1)
+        self._folders_grp.addButton(self._folders_no,  0)
+        self._folders_no.setChecked(True)
+        folders_layout.addWidget(self._folders_yes)
+        folders_layout.addWidget(self._folders_no)
+        self._create_folders_btn = QPushButton("Create Folders")
+        self._create_folders_btn.setEnabled(False)
+        self._create_folders_btn.clicked.connect(self._create_default_folders)
+        folders_layout.addWidget(self._create_folders_btn)
+        self._folders_grp.idClicked.connect(
+            lambda bid: self._create_folders_btn.setEnabled(bid == 1)
+        )
+        outer.addWidget(folders_box)
+
         outer.addStretch()
+
+    def _create_default_folders(self):
+        resources = self._res_path.text().strip()
+        if not resources:
+            QMessageBox.warning(self, "No Resources Folder",
+                                "Please set a Resources Folder before creating folders.")
+            return
+        if not os.path.isdir(resources):
+            QMessageBox.warning(self, "Resources Folder Not Found",
+                                f"The Resources folder is not accessible:\n{resources}")
+            return
+
+        vehicles = self._db.get_all_vehicles()
+        if not vehicles:
+            QMessageBox.information(self, "No Vehicles", "No vehicles found in the database.")
+            return
+
+        subfolders = ["Parts", "Services", "Service Log"]
+        created, skipped = [], []
+        for v in vehicles:
+            folder_name = v["nickname"] or f"{v['year']} {v['make']} {v['model']}"
+            vehicle_dir = os.path.join(resources, folder_name)
+            is_new = not os.path.exists(vehicle_dir)
+            for sub in subfolders:
+                os.makedirs(os.path.join(vehicle_dir, sub), exist_ok=True)
+            (created if is_new else skipped).append(folder_name)
+
+        parts = []
+        if created:
+            parts.append(f"Created: {', '.join(created)}")
+        if skipped:
+            parts.append(f"Already existed (subfolders ensured): {', '.join(skipped)}")
+        QMessageBox.information(self, "Folders Created", "\n".join(parts))
 
     def sync_theme(self, theme: str):
         (self._dark_btn if theme == "dark" else self._light_btn).setChecked(True)
@@ -3087,6 +3141,7 @@ class VehicleApp(QMainWindow):
                                          lambda: self.settings.value("resources_folder", ""))
         self.parts_tab     = PartsTab(self.db, lambda: self.settings.value("resources_folder", ""))
         self.settings_tab  = SettingsTab(
+            self.db,
             self._apply_theme, self._apply_unit,
             lambda path: self.settings.setValue("resources_folder", path),
             current_theme=self.settings.value("theme", "dark"),
