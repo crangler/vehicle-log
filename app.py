@@ -10,10 +10,16 @@ from PySide6.QtWidgets import (
     QSpinBox, QDoubleSpinBox, QTextEdit, QDialogButtonBox, QStatusBar,
     QMessageBox, QHeaderView, QTabWidget, QLabel, QComboBox, QPushButton,
     QDateEdit, QRadioButton, QButtonGroup, QGroupBox, QFileDialog,
-    QListWidget, QListWidgetItem, QScrollArea, QSlider,
+    QListWidget, QListWidgetItem, QScrollArea, QSlider, QTextBrowser,
 )
 from PySide6.QtCore import Qt, QDate, QEvent, QSettings, QSize, QUrl
-from PySide6.QtGui import QColor, QBrush, QPalette, QDesktopServices, QPixmap, QIcon
+from PySide6.QtGui import QColor, QBrush, QPalette, QDesktopServices, QPixmap, QIcon, QTextDocument
+
+try:
+    from PySide6.QtPrintSupport import QPrinter, QPrintDialog
+    _HAS_PRINT = True
+except ImportError:
+    _HAS_PRINT = False
 
 try:
     from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
@@ -462,6 +468,15 @@ class DatabaseManager:
             WHERE sl.vehicle_id = ?
             ORDER BY sl.service_date DESC, sl.id DESC
         """, (vehicle_id,)).fetchall()
+
+    def get_service_log_entries_range(self, vehicle_id, date_from: str, date_to: str):
+        return self.conn.execute("""
+            SELECT sl.*, mi.name AS service_name
+            FROM service_log sl
+            JOIN maintenance_items mi ON sl.item_id = mi.id
+            WHERE sl.vehicle_id = ? AND sl.service_date BETWEEN ? AND ?
+            ORDER BY sl.service_date ASC, sl.id ASC
+        """, (vehicle_id, date_from, date_to)).fetchall()
 
     def get_service_log_images(self, log_id):
         return self.conn.execute(
@@ -2401,6 +2416,9 @@ class ServiceLogTab(QWidget):
         log_btn = QPushButton("Log Service")
         log_btn.clicked.connect(self._log_service)
         top_row.addWidget(log_btn)
+        report_btn = QPushButton("Generate Report…")
+        report_btn.clicked.connect(self._generate_report)
+        top_row.addWidget(report_btn)
         layout.addLayout(top_row)
 
         self.table = QTableWidget()
@@ -2610,6 +2628,314 @@ class ServiceLogTab(QWidget):
                 self.db.add_service_log_image(entry_id, path, _get_file_type(path))
             self.db.set_service_log_parts(entry_id, dlg.get_parts_data())
             self._on_service_logged()
+
+    def _generate_report(self):
+        if self._vehicle_id is None:
+            QMessageBox.information(self, "No Vehicle", "Select a vehicle in the Garage tab first.")
+            return
+        opts = ReportOptionsDialog(self)
+        if opts.exec() != QDialog.DialogCode.Accepted:
+            return
+        date_from, date_to = opts.get_range()
+        vehicle   = self.db.get_vehicle(self._vehicle_id)
+        entries   = self.db.get_service_log_entries_range(self._vehicle_id, date_from, date_to)
+        parts_map = {e["id"]: self.db.get_service_log_parts(e["id"]) for e in entries}
+        unit      = self.get_unit()
+        html      = _build_report_html(vehicle, entries, unit, date_from, date_to, parts_map)
+        name      = vehicle["nickname"] or f"{vehicle['year']} {vehicle['make']} {vehicle['model']}"
+        ServiceReportDialog(self, html=html, vehicle_name=name,
+                            date_from=date_from, date_to=date_to).exec()
+
+
+# ── service report ───────────────────────────────────────────────────────────
+
+def _build_report_html(vehicle, entries, unit: str, date_from: str, date_to: str, parts_map: dict) -> str:
+    from datetime import date as _date
+
+    def fmt_date(d: str) -> str:
+        if not d:
+            return "—"
+        try:
+            y, m, day = d.split("-")
+            return _date(int(y), int(m), int(day)).strftime("%b %d, %Y")
+        except Exception:
+            return d
+
+    nick      = vehicle["nickname"] or ""
+    full_name = f"{vehicle['year']} {vehicle['make']} {vehicle['model']}"
+    if vehicle["trim"]:
+        full_name += f" {vehicle['trim']}"
+    display_name = f"{full_name} ({nick})" if nick else full_name
+    vin   = vehicle["vin"]           or ""
+    plate = vehicle["license_plate"] or ""
+
+    total_cost = sum(e["cost"] for e in entries if e["cost"])
+    today_str  = _date.today().strftime("%B %d, %Y")
+
+    info_rows = f'<tr><td><b>Vehicle:</b></td><td>{display_name}</td></tr>'
+    if vin:
+        info_rows += f'<tr><td><b>VIN:</b></td><td>{vin}</td></tr>'
+    if plate:
+        info_rows += f'<tr><td><b>License Plate:</b></td><td>{plate}</td></tr>'
+    info_rows += (
+        f'<tr><td><b>Report Period:</b></td>'
+        f'<td>{fmt_date(date_from)} &mdash; {fmt_date(date_to)}</td></tr>'
+    )
+
+    rows_html = ""
+    for e in entries:
+        dist  = f"{km_to_unit(e['mileage_at_service'], unit):,}" if e["mileage_at_service"] else "—"
+        cost  = f"${e['cost']:.2f}" if e["cost"] else "—"
+        shop  = e["shop"]  or "—"
+        notes = e["notes"] or ""
+
+        parts = parts_map.get(e["id"], [])
+        parts_str = ""
+        if parts:
+            items = ", ".join(f"{p['name']} &times;{p['quantity']}" for p in parts)
+            parts_str = f'<br><span style="font-size:9pt;color:#555;">Parts: {items}</span>'
+
+        notes_str = ""
+        if notes:
+            notes_str = f'<br><span style="font-size:9pt;font-style:italic;color:#666;">{notes}</span>'
+
+        rows_html += (
+            f"<tr>"
+            f"<td>{e['service_name']}{parts_str}</td>"
+            f"<td>{fmt_date(e['service_date'])}</td>"
+            f'<td align="right">{dist}</td>'
+            f'<td align="right">{cost}</td>'
+            f"<td>{shop}{notes_str}</td>"
+            f"</tr>\n"
+        )
+
+    if not rows_html:
+        rows_html = (
+            '<tr><td colspan="5" align="center" '
+            'style="color:#999;font-style:italic;padding:12px;">'
+            "No service entries in this date range.</td></tr>\n"
+        )
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body {{
+  font-family: Arial, sans-serif;
+  font-size: 11pt;
+  color: #222;
+  margin: 28px;
+}}
+h1 {{
+  color: #1a4f7a;
+  border-bottom: 2px solid #1a4f7a;
+  padding-bottom: 6px;
+  margin-bottom: 16px;
+}}
+h2 {{
+  color: #444;
+  font-size: 12pt;
+  margin-top: 24px;
+  margin-bottom: 6px;
+}}
+.info-table td {{
+  padding: 3px 24px 3px 0;
+}}
+.service-table {{
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 6px;
+}}
+.service-table th {{
+  background-color: #1a4f7a;
+  color: white;
+  padding: 7px 8px;
+  text-align: left;
+}}
+.service-table td {{
+  padding: 6px 8px;
+  border-bottom: 1px solid #dde;
+  vertical-align: top;
+}}
+.service-table tr:nth-child(even) td {{
+  background-color: #f4f7fc;
+}}
+.summary-box {{
+  background-color: #eef3fb;
+  border: 1px solid #c8d8f0;
+  padding: 10px 16px;
+  margin-top: 24px;
+  display: inline-block;
+}}
+.summary-box td {{
+  padding: 3px 20px 3px 0;
+}}
+.footer {{
+  margin-top: 32px;
+  color: #bbb;
+  font-size: 9pt;
+  text-align: center;
+}}
+</style>
+</head>
+<body>
+<h1>Vehicle Service Report</h1>
+
+<table class="info-table">{info_rows}</table>
+
+<h2>Service History</h2>
+<table class="service-table" border="1" cellpadding="6" cellspacing="0">
+<thead>
+<tr>
+  <th>Service</th>
+  <th>Date</th>
+  <th>Odometer ({unit})</th>
+  <th>Cost</th>
+  <th>Shop / Notes</th>
+</tr>
+</thead>
+<tbody>
+{rows_html}
+</tbody>
+</table>
+
+<div class="summary-box">
+<table>
+<tr><td><b>Total Services:</b></td><td>{len(entries)}</td></tr>
+<tr><td><b>Total Cost:</b></td><td>${total_cost:,.2f}</td></tr>
+<tr><td><b>Generated:</b></td><td>{today_str}</td></tr>
+</table>
+</div>
+
+<div class="footer">Generated by Vehicle Log</div>
+</body>
+</html>"""
+
+
+class ReportOptionsDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Generate Service Report")
+        self.setMinimumWidth(300)
+        layout = QFormLayout(self)
+
+        today      = QDate.currentDate()
+        year_start = QDate(today.year(), 1, 1)
+
+        self._date_from = QDateEdit(year_start)
+        self._date_from.setCalendarPopup(True)
+        self._date_from.setDisplayFormat("yyyy-MM-dd")
+
+        self._date_to = QDateEdit(today)
+        self._date_to.setCalendarPopup(True)
+        self._date_to.setDisplayFormat("yyyy-MM-dd")
+
+        layout.addRow("From:", self._date_from)
+        layout.addRow("To:",   self._date_to)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(self._validate_and_accept)
+        btns.rejected.connect(self.reject)
+        layout.addRow(btns)
+
+    def _validate_and_accept(self):
+        if self._date_from.date() > self._date_to.date():
+            QMessageBox.warning(self, "Invalid Range", "From date must not be after To date.")
+            return
+        self.accept()
+
+    def get_range(self) -> tuple[str, str]:
+        return (
+            self._date_from.date().toString("yyyy-MM-dd"),
+            self._date_to.date().toString("yyyy-MM-dd"),
+        )
+
+
+class ServiceReportDialog(QDialog):
+    def __init__(self, parent=None, html: str = "", vehicle_name: str = "",
+                 date_from: str = "", date_to: str = ""):
+        super().__init__(parent)
+        self.setWindowTitle(f"Service Report — {vehicle_name}")
+        self.setMinimumSize(740, 560)
+        self.resize(820, 640)
+        self._html         = html
+        self._vehicle_name = vehicle_name
+        self._date_from    = date_from
+        self._date_to      = date_to
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+
+        self._browser = QTextBrowser()
+        self._browser.setStyleSheet(
+            "QTextBrowser { background-color: #ffffff; color: #222222; }"
+        )
+        self._browser.setHtml(self._html)
+        self._browser.setOpenLinks(False)
+        layout.addWidget(self._browser)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+
+        if _HAS_PRINT:
+            print_btn = QPushButton("Print…")
+            print_btn.clicked.connect(self._print)
+            btn_row.addWidget(print_btn)
+
+            pdf_btn = QPushButton("Save as PDF…")
+            pdf_btn.clicked.connect(self._save_pdf)
+            btn_row.addWidget(pdf_btn)
+
+        html_btn = QPushButton("Save as HTML…")
+        html_btn.clicked.connect(self._save_html)
+        btn_row.addWidget(html_btn)
+
+        close_btn = QPushButton("Close")
+        close_btn.setDefault(True)
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(close_btn)
+
+        layout.addLayout(btn_row)
+
+    def _safe_filename(self) -> str:
+        safe = "".join(c if c.isalnum() or c in " _-" else "_" for c in self._vehicle_name)
+        return f"{safe.strip()}_service_report_{self._date_from}_to_{self._date_to}"
+
+    def _print(self):
+        printer = QPrinter()
+        dlg = QPrintDialog(printer, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            doc = QTextDocument()
+            doc.setHtml(self._html)
+            doc.print_(printer)
+
+    def _save_pdf(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save PDF", f"{self._safe_filename()}.pdf", "PDF Files (*.pdf)"
+        )
+        if not path:
+            return
+        printer = QPrinter()
+        printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+        printer.setOutputFileName(path)
+        doc = QTextDocument()
+        doc.setHtml(self._html)
+        doc.print_(printer)
+        QMessageBox.information(self, "Saved", f"PDF saved to:\n{path}")
+
+    def _save_html(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save HTML Report", f"{self._safe_filename()}.html", "HTML Files (*.html)"
+        )
+        if not path:
+            return
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(self._html)
+        QMessageBox.information(self, "Saved", f"Report saved to:\n{path}")
 
 
 # ── parts tab ────────────────────────────────────────────────────────────────
