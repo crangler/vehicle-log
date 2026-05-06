@@ -1692,11 +1692,20 @@ class AddImageDialog(QDialog):
 
     def _populate_folders(self):
         self._folder_combo.clear()
-        self._folder_combo.addItem("")
+        self._folder_combo.addItem("", "")
         try:
-            for entry in sorted(os.scandir(self._resources_folder), key=lambda e: e.name.lower()):
-                if entry.is_dir():
-                    self._folder_combo.addItem(entry.name)
+            for top in sorted(os.scandir(self._resources_folder), key=lambda e: e.name.lower()):
+                if not top.is_dir():
+                    continue
+                self._folder_combo.addItem(top.name, top.name)
+                try:
+                    for sub in sorted(os.scandir(top.path), key=lambda e: e.name.lower()):
+                        if sub.is_dir():
+                            display = f"  {top.name} / {sub.name}"
+                            value   = f"{top.name}/{sub.name}"
+                            self._folder_combo.addItem(display, value)
+                except OSError:
+                    pass
         except OSError:
             pass
 
@@ -1721,9 +1730,13 @@ class AddImageDialog(QDialog):
 
     def get_destination_path(self) -> str:
         dest_dir = self._resources_folder
-        subfolder = self._folder_combo.currentText().strip()
+        idx = self._folder_combo.currentIndex()
+        if idx >= 0:
+            subfolder = self._folder_combo.itemData(idx)
+        else:
+            subfolder = self._folder_combo.currentText().strip()
         if subfolder:
-            dest_dir = os.path.join(dest_dir, subfolder)
+            dest_dir = os.path.join(dest_dir, *subfolder.split("/"))
             os.makedirs(dest_dir, exist_ok=True)
         dest_path = os.path.join(dest_dir, self._filename_edit.text().strip())
         if os.path.abspath(dest_path) != os.path.abspath(self._source_path):
