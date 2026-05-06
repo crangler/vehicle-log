@@ -499,16 +499,23 @@ class DatabaseManager:
     def get_schedule(self, vehicle_id):
         vehicle = self.get_vehicle(vehicle_id)
         items   = self.get_maintenance_items(vehicle_id)
-        result  = []
-        for item in items:
-            last = self.conn.execute("""
-                SELECT * FROM service_log
-                WHERE vehicle_id=? AND item_id=?
-                ORDER BY service_date DESC, mileage_at_service DESC
-                LIMIT 1
-            """, (vehicle_id, item["id"])).fetchone()
-            result.append((item, last, vehicle))
-        return result
+
+        # Fetch all service log entries for this vehicle in one query, most
+        # recent first.  The dict comprehension keeps only the first (latest)
+        # entry seen per item_id, which is equivalent to the previous LIMIT 1
+        # per-item query.
+        all_entries = self.conn.execute("""
+            SELECT * FROM service_log
+            WHERE vehicle_id = ?
+            ORDER BY service_date DESC, mileage_at_service DESC
+        """, (vehicle_id,)).fetchall()
+
+        last_by_item: dict[int, sqlite3.Row] = {}
+        for entry in all_entries:
+            if entry["item_id"] not in last_by_item:
+                last_by_item[entry["item_id"]] = entry
+
+        return [(item, last_by_item.get(item["id"]), vehicle) for item in items]
 
     # service log
 
@@ -985,28 +992,15 @@ class LogServiceDialog(QDialog):
             return
         path = meta["path"]
         ft   = meta.get("file_type") or _get_file_type(path)
+        image_paths, img_row = [], 0
         if ft == "image":
-            image_paths = []
-            img_row = 0
             for i in range(self._staged_list.count()):
                 m = self._staged_list.item(i).data(Qt.ItemDataRole.UserRole)
                 if m and m.get("file_type", "image") == "image":
                     if m["path"] == path:
                         img_row = len(image_paths)
                     image_paths.append(m["path"])
-            ImageViewerDialog(self, image_paths, img_row).exec()
-        elif ft == "video":
-            if _HAS_MULTIMEDIA:
-                VideoViewerDialog(self, path).exec()
-            else:
-                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
-        elif ft == "pdf":
-            if _HAS_PDF:
-                PdfViewerDialog(self, path).exec()
-            else:
-                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
-        else:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        _open_file(self, path, ft, image_paths, img_row)
 
     def _remove_staged_image(self):
         row = self._staged_list.currentRow()
@@ -1296,28 +1290,15 @@ class MaintenanceItemDialog(QDialog):
             return
         path = meta["path"]
         ft   = meta.get("file_type") or _get_file_type(path)
+        image_paths, img_row = [], 0
         if ft == "image":
-            image_paths = []
-            img_row = 0
             for i in range(self._staged_list.count()):
                 m = self._staged_list.item(i).data(Qt.ItemDataRole.UserRole)
                 if m and m.get("file_type", "image") == "image":
                     if m["path"] == path:
                         img_row = len(image_paths)
                     image_paths.append(m["path"])
-            ImageViewerDialog(self, image_paths, img_row).exec()
-        elif ft == "video":
-            if _HAS_MULTIMEDIA:
-                VideoViewerDialog(self, path).exec()
-            else:
-                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
-        elif ft == "pdf":
-            if _HAS_PDF:
-                PdfViewerDialog(self, path).exec()
-            else:
-                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
-        else:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        _open_file(self, path, ft, image_paths, img_row)
 
     def _remove_staged_file(self):
         row = self._staged_list.currentRow()
@@ -1662,6 +1643,29 @@ class PdfViewerDialog(QDialog):
         self._zoom = max(0.1, min(factor, 5.0))
         self._view.setZoomFactor(self._zoom)
         self._zoom_label.setText(f"{round(self._zoom * 100)}%")
+
+
+def _open_file(
+    parent: QWidget,
+    path: str,
+    ft: str,
+    image_paths: list[str] | None = None,
+    img_row: int = 0,
+) -> None:
+    if ft == "image":
+        ImageViewerDialog(parent, image_paths or [path], img_row).exec()
+    elif ft == "video":
+        if _HAS_MULTIMEDIA:
+            VideoViewerDialog(parent, path).exec()
+        else:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+    elif ft == "pdf":
+        if _HAS_PDF:
+            PdfViewerDialog(parent, path).exec()
+        else:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+    else:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
 
 # ── add image dialog ─────────────────────────────────────────────────────────
@@ -2311,24 +2315,11 @@ class ServicesTab(QWidget):
         row = self._file_list.currentRow()
         if row < 0 or row >= len(self._file_paths):
             return
-        path = self._file_paths[row]
-        ft   = self._file_types[row] if row < len(self._file_types) else _get_file_type(path)
-        if ft == "image":
-            image_paths = [p for p, t in zip(self._file_paths, self._file_types) if t == "image"]
-            img_row     = self._file_types[:row].count("image")
-            ImageViewerDialog(self, image_paths, img_row).exec()
-        elif ft == "video":
-            if _HAS_MULTIMEDIA:
-                VideoViewerDialog(self, path).exec()
-            else:
-                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
-        elif ft == "pdf":
-            if _HAS_PDF:
-                PdfViewerDialog(self, path).exec()
-            else:
-                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
-        else:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        path        = self._file_paths[row]
+        ft          = self._file_types[row] if row < len(self._file_types) else _get_file_type(path)
+        image_paths = [p for p, t in zip(self._file_paths, self._file_types) if t == "image"]
+        img_row     = self._file_types[:row].count("image")
+        _open_file(self, path, ft, image_paths, img_row)
 
     def _add_item(self):
         if self._vehicle_id is None:
@@ -2567,24 +2558,11 @@ class ServiceLogTab(QWidget):
         row = self._image_list.currentRow()
         if row < 0 or row >= len(self._image_paths):
             return
-        path = self._image_paths[row]
-        ft   = self._file_types[row] if row < len(self._file_types) else _get_file_type(path)
-        if ft == "image":
-            image_paths = [p for p, t in zip(self._image_paths, self._file_types) if t == "image"]
-            img_row     = self._file_types[:row].count("image")
-            ImageViewerDialog(self, image_paths, img_row).exec()
-        elif ft == "video":
-            if _HAS_MULTIMEDIA:
-                VideoViewerDialog(self, path).exec()
-            else:
-                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
-        elif ft == "pdf":
-            if _HAS_PDF:
-                PdfViewerDialog(self, path).exec()
-            else:
-                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
-        else:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        path        = self._image_paths[row]
+        ft          = self._file_types[row] if row < len(self._file_types) else _get_file_type(path)
+        image_paths = [p for p, t in zip(self._image_paths, self._file_types) if t == "image"]
+        img_row     = self._file_types[:row].count("image")
+        _open_file(self, path, ft, image_paths, img_row)
 
     def _edit_entry(self):
         lid = self._selected_log_id()
@@ -3090,28 +3068,15 @@ class PartDialog(QDialog):
             return
         path = meta["path"]
         ft   = meta.get("file_type") or _get_file_type(path)
+        image_paths, img_row = [], 0
         if ft == "image":
-            image_paths = []
-            img_row = 0
             for i in range(self._staged_list.count()):
                 m = self._staged_list.item(i).data(Qt.ItemDataRole.UserRole)
                 if m and m.get("file_type", "image") == "image":
                     if m["path"] == path:
                         img_row = len(image_paths)
                     image_paths.append(m["path"])
-            ImageViewerDialog(self, image_paths, img_row).exec()
-        elif ft == "video":
-            if _HAS_MULTIMEDIA:
-                VideoViewerDialog(self, path).exec()
-            else:
-                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
-        elif ft == "pdf":
-            if _HAS_PDF:
-                PdfViewerDialog(self, path).exec()
-            else:
-                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
-        else:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        _open_file(self, path, ft, image_paths, img_row)
 
     def reject(self):
         for path in self._staged_images:
