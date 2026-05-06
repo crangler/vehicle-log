@@ -396,6 +396,25 @@ class DatabaseManager:
             ORDER BY p.name
         """, (log_id,)).fetchall()
 
+    def get_service_log_parts_for_entries(
+        self, log_ids: list[int]
+    ) -> dict[int, list[sqlite3.Row]]:
+        if not log_ids:
+            return {}
+        placeholders = ",".join("?" * len(log_ids))
+        rows = self.conn.execute(f"""
+            SELECT slp.id, slp.log_id, slp.part_id, slp.quantity,
+                   p.name, p.part_number
+            FROM service_log_parts slp
+            JOIN parts p ON slp.part_id = p.id
+            WHERE slp.log_id IN ({placeholders})
+            ORDER BY slp.log_id, p.name
+        """, log_ids).fetchall()
+        result: dict[int, list[sqlite3.Row]] = {}
+        for row in rows:
+            result.setdefault(row["log_id"], []).append(row)
+        return result
+
     def set_service_log_parts(self, log_id, parts):
         self.conn.execute(
             "DELETE FROM service_log_parts WHERE log_id=?", (log_id,))
@@ -2758,8 +2777,8 @@ class ServiceLogTab(QWidget):
         vehicle = self.db.get_vehicle(self._vehicle_id)
         entries = self.db.get_service_log_entries_range(
             self._vehicle_id, date_from, date_to)
-        parts_map = {e["id"]: self.db.get_service_log_parts(
-            e["id"]) for e in entries}
+        parts_map = self.db.get_service_log_parts_for_entries(
+            [e["id"] for e in entries])
         unit = self.get_unit()
         html = _build_report_html(
             vehicle, entries, unit, date_from, date_to, parts_map)
