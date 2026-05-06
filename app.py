@@ -319,6 +319,11 @@ class DatabaseManager:
             (vehicle_id,),
         ).fetchall()
 
+    def get_maintenance_item(self, item_id: int) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM maintenance_items WHERE id=?", (item_id,)
+        ).fetchone()
+
     def add_maintenance_item(self, vehicle_id, data) -> int:
         max_order = self.conn.execute(
             "SELECT COALESCE(MAX(sort_order), 0) FROM maintenance_items WHERE vehicle_id=?",
@@ -2475,9 +2480,7 @@ class ServicesTab(QWidget):
         iid = self._selected_id()
         if iid is None:
             return
-        items = {item["id"]: item for item in self.db.get_maintenance_items(
-            self._vehicle_id)}
-        dlg = MaintenanceItemDialog(self, items[iid], unit=self.get_unit(),
+        dlg = MaintenanceItemDialog(self, self.db.get_maintenance_item(iid), unit=self.get_unit(),
                                     db=self.db,
                                     get_resources_folder=self.get_resources_folder,
                                     vehicle_id=self._vehicle_id)
@@ -2499,9 +2502,7 @@ class ServicesTab(QWidget):
         iid = self._selected_id()
         if iid is None:
             return
-        items = {item["id"]: item for item in self.db.get_maintenance_items(
-            self._vehicle_id)}
-        name = items[iid]["name"]
+        name = self.db.get_maintenance_item(iid)["name"]
         log_count = self.db.get_service_log_count_for_item(iid)
 
         msg = f"Delete '{name}'?"
