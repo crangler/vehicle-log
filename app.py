@@ -40,8 +40,11 @@ except ImportError:
 # ── helpers ────────────────────────────────────────────────────────────────
 
 _IMAGE_EXTS = frozenset({'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'})
-_VIDEO_EXTS = frozenset({'.mp4', '.avi', '.mov', '.mkv', '.wmv', '.m4v', '.webm', '.mpeg', '.mpg'})
-_PDF_EXTS   = frozenset({'.pdf'})
+_VIDEO_EXTS = frozenset({
+    '.mp4', '.avi', '.mov', '.mkv', '.wmv',
+    '.m4v', '.webm', '.mpeg', '.mpg'})
+_PDF_EXTS = frozenset({'.pdf'})
+
 
 def _get_file_type(path: str) -> str:
     ext = os.path.splitext(path)[1].lower()
@@ -64,10 +67,12 @@ def add_months(d: date, months: int) -> date:
 
 KM_PER_MI = 1.60934
 
+
 def km_to_unit(km: int | None, unit: str) -> int:
     if km is None:
         return 0
     return round(km / KM_PER_MI) if unit == "mi" else round(km)
+
 
 def unit_to_km(val: int | None, unit: str) -> int:
     if val is None:
@@ -205,7 +210,8 @@ class DatabaseManager:
         self.conn.commit()
 
     def _migrate_per_vehicle_items(self):
-        cols = {row[1] for row in self.conn.execute("PRAGMA table_info(maintenance_items)")}
+        cols = {row[1] for row in self.conn.execute(
+            "PRAGMA table_info(maintenance_items)")}
         if "vehicle_id" in cols:
             return
         self.conn.execute(
@@ -220,18 +226,22 @@ class DatabaseManager:
             for v in vehicles:
                 cur = self.conn.execute(
                     "INSERT INTO maintenance_items (vehicle_id, name, interval_miles, interval_months, sort_order) VALUES (?,?,?,?,?)",
-                    (v["id"], item["name"], item["interval_miles"], item["interval_months"], item["sort_order"]),
+                    (v["id"], item["name"], item["interval_miles"],
+                     item["interval_months"], item["sort_order"]),
                 )
                 id_map[(item["id"], v["id"])] = cur.lastrowid
         for entry in self.conn.execute("SELECT id, vehicle_id, item_id FROM service_log").fetchall():
             new_id = id_map.get((entry["item_id"], entry["vehicle_id"]))
             if new_id:
-                self.conn.execute("UPDATE service_log SET item_id=? WHERE id=?", (new_id, entry["id"]))
-        self.conn.execute("DELETE FROM maintenance_items WHERE vehicle_id IS NULL")
+                self.conn.execute(
+                    "UPDATE service_log SET item_id=? WHERE id=?", (new_id, entry["id"]))
+        self.conn.execute(
+            "DELETE FROM maintenance_items WHERE vehicle_id IS NULL")
         self.conn.commit()
 
     def _migrate_service_log_images(self):
-        cols = {row[1] for row in self.conn.execute("PRAGMA table_info(service_log_images)")}
+        cols = {row[1] for row in self.conn.execute(
+            "PRAGMA table_info(service_log_images)")}
         if "file_type" not in cols:
             self.conn.execute(
                 "ALTER TABLE service_log_images ADD COLUMN file_type TEXT NOT NULL DEFAULT 'image'"
@@ -239,13 +249,16 @@ class DatabaseManager:
             self.conn.commit()
 
     def _migrate_odometer_reading_date(self):
-        cols = {row[1] for row in self.conn.execute("PRAGMA table_info(vehicles)")}
+        cols = {row[1]
+                for row in self.conn.execute("PRAGMA table_info(vehicles)")}
         if "odometer_reading_date" not in cols:
-            self.conn.execute("ALTER TABLE vehicles ADD COLUMN odometer_reading_date TEXT")
+            self.conn.execute(
+                "ALTER TABLE vehicles ADD COLUMN odometer_reading_date TEXT")
             self.conn.commit()
 
     def _migrate_parts(self):
-        cols = {row[1] for row in self.conn.execute("PRAGMA table_info(parts)")}
+        cols = {row[1]
+                for row in self.conn.execute("PRAGMA table_info(parts)")}
         if "notes" not in cols:
             self.conn.execute("ALTER TABLE parts ADD COLUMN notes TEXT")
             self.conn.commit()
@@ -256,7 +269,8 @@ class DatabaseManager:
         ).fetchone()[0] == 0:
             self.conn.executemany(
                 "INSERT INTO maintenance_items (vehicle_id, name, interval_miles, interval_months, sort_order) VALUES (?,?,?,?,?)",
-                [(vehicle_id, name, dist, months, order) for name, dist, months, order in DEFAULT_ITEMS],
+                [(vehicle_id, name, dist, months, order)
+                 for name, dist, months, order in DEFAULT_ITEMS],
             )
             self.conn.commit()
 
@@ -328,13 +342,16 @@ class DatabaseManager:
         self.conn.commit()
 
     def delete_maintenance_item(self, item_id):
-        self.conn.execute("DELETE FROM service_log WHERE item_id=?", (item_id,))
-        self.conn.execute("DELETE FROM maintenance_items WHERE id=?", (item_id,))
+        self.conn.execute(
+            "DELETE FROM service_log WHERE item_id=?", (item_id,))
+        self.conn.execute(
+            "DELETE FROM maintenance_items WHERE id=?", (item_id,))
         self.conn.commit()
 
     def get_maintenance_item_files(self, item_id):
         return self.conn.execute(
-            "SELECT * FROM maintenance_item_files WHERE item_id=? ORDER BY id", (item_id,)
+            "SELECT * FROM maintenance_item_files WHERE item_id=? ORDER BY id", (
+                item_id,)
         ).fetchall()
 
     def add_maintenance_item_file(self, item_id, path, file_type='image'):
@@ -345,7 +362,8 @@ class DatabaseManager:
         self.conn.commit()
 
     def delete_maintenance_item_file(self, file_id):
-        self.conn.execute("DELETE FROM maintenance_item_files WHERE id=?", (file_id,))
+        self.conn.execute(
+            "DELETE FROM maintenance_item_files WHERE id=?", (file_id,))
         self.conn.commit()
 
     def get_maintenance_item_parts(self, item_id):
@@ -359,7 +377,8 @@ class DatabaseManager:
         """, (item_id,)).fetchall()
 
     def set_maintenance_item_parts(self, item_id, parts):
-        self.conn.execute("DELETE FROM maintenance_item_parts WHERE item_id=?", (item_id,))
+        self.conn.execute(
+            "DELETE FROM maintenance_item_parts WHERE item_id=?", (item_id,))
         for p in parts:
             self.conn.execute(
                 "INSERT INTO maintenance_item_parts (item_id, part_id, quantity) VALUES (?,?,?)",
@@ -378,7 +397,8 @@ class DatabaseManager:
         """, (log_id,)).fetchall()
 
     def set_service_log_parts(self, log_id, parts):
-        self.conn.execute("DELETE FROM service_log_parts WHERE log_id=?", (log_id,))
+        self.conn.execute(
+            "DELETE FROM service_log_parts WHERE log_id=?", (log_id,))
         for p in parts:
             self.conn.execute(
                 "INSERT INTO service_log_parts (log_id, part_id, quantity) VALUES (?,?,?)",
@@ -449,12 +469,14 @@ class DatabaseManager:
 
     def get_vehicle_images(self, vehicle_id):
         return self.conn.execute(
-            "SELECT * FROM vehicle_images WHERE vehicle_id=? ORDER BY id", (vehicle_id,)
+            "SELECT * FROM vehicle_images WHERE vehicle_id=? ORDER BY id", (
+                vehicle_id,)
         ).fetchall()
 
     def add_vehicle_image(self, vehicle_id, path):
         self.conn.execute(
-            "INSERT INTO vehicle_images (vehicle_id, path) VALUES (?, ?)", (vehicle_id, path)
+            "INSERT INTO vehicle_images (vehicle_id, path) VALUES (?, ?)", (
+                vehicle_id, path)
         )
         self.conn.commit()
 
@@ -484,7 +506,8 @@ class DatabaseManager:
 
     def get_service_log_images(self, log_id):
         return self.conn.execute(
-            "SELECT * FROM service_log_images WHERE log_id=? ORDER BY id", (log_id,)
+            "SELECT * FROM service_log_images WHERE log_id=? ORDER BY id", (
+                log_id,)
         ).fetchall()
 
     def add_service_log_image(self, log_id, path, file_type='image'):
@@ -495,14 +518,15 @@ class DatabaseManager:
         self.conn.commit()
 
     def delete_service_log_image(self, image_id):
-        self.conn.execute("DELETE FROM service_log_images WHERE id=?", (image_id,))
+        self.conn.execute(
+            "DELETE FROM service_log_images WHERE id=?", (image_id,))
         self.conn.commit()
 
     # schedule
 
     def get_schedule(self, vehicle_id):
         vehicle = self.get_vehicle(vehicle_id)
-        items   = self.get_maintenance_items(vehicle_id)
+        items = self.get_maintenance_items(vehicle_id)
 
         # Fetch all service log entries for this vehicle in one query, most
         # recent first.  The dict comprehension keeps only the first (latest)
@@ -594,7 +618,8 @@ def compute_status(
             dist_status = STATUS_DUE_SOON
 
     if item["interval_months"] and last["service_date"]:
-        next_date = add_months(date.fromisoformat(last["service_date"]), item["interval_months"])
+        next_date = add_months(date.fromisoformat(
+            last["service_date"]), item["interval_months"])
         if today >= next_date:
             date_status = STATUS_OVERDUE
         elif (next_date - today).days <= DAYS_WARNING:
@@ -660,20 +685,21 @@ class VehicleDialog(QDialog):
         def val(field, default=""):
             return (v[field] or default) if v else default
 
-        self.nickname        = QLineEdit(val("nickname"))
-        self.year            = QSpinBox()
+        self.nickname = QLineEdit(val("nickname"))
+        self.year = QSpinBox()
         self.year.setRange(1900, 2100)
         self.year.setValue(v["year"] if v else 2020)
-        self.make            = QLineEdit(val("make"))
-        self.model           = QLineEdit(val("model"))
-        self.trim            = QLineEdit(val("trim"))
-        self.color           = QLineEdit(val("color"))
-        self.vin             = QLineEdit(val("vin"))
-        self.license_plate   = QLineEdit(val("license_plate"))
+        self.make = QLineEdit(val("make"))
+        self.model = QLineEdit(val("model"))
+        self.trim = QLineEdit(val("trim"))
+        self.color = QLineEdit(val("color"))
+        self.vin = QLineEdit(val("vin"))
+        self.license_plate = QLineEdit(val("license_plate"))
         self.current_mileage = QSpinBox()
         self.current_mileage.setRange(0, 9_999_999)
         self.current_mileage.setSingleStep(100)
-        self.current_mileage.setValue(km_to_unit(v["current_mileage"], unit) if v else 0)
+        self.current_mileage.setValue(km_to_unit(
+            v["current_mileage"], unit) if v else 0)
 
         self.odometer_reading_date = QDateEdit()
         self.odometer_reading_date.setCalendarPopup(True)
@@ -682,11 +708,12 @@ class VehicleDialog(QDialog):
         self.odometer_reading_date.setMinimumDate(QDate(1900, 1, 1))
         stored_date = val("odometer_reading_date")
         if stored_date:
-            self.odometer_reading_date.setDate(QDate.fromString(stored_date, "yyyy-MM-dd"))
+            self.odometer_reading_date.setDate(
+                QDate.fromString(stored_date, "yyyy-MM-dd"))
         else:
             self.odometer_reading_date.setDate(QDate.currentDate())
 
-        self.notes           = QTextEdit(val("notes"))
+        self.notes = QTextEdit(val("notes"))
         self.notes.setFixedHeight(70)
 
         layout.addRow("Nickname:",                    self.nickname)
@@ -698,7 +725,8 @@ class VehicleDialog(QDialog):
         layout.addRow("VIN:",                         self.vin)
         layout.addRow("License Plate:",               self.license_plate)
         layout.addRow(f"Odometer ({unit}):",          self.current_mileage)
-        layout.addRow("Odometer Reading Date:",       self.odometer_reading_date)
+        layout.addRow("Odometer Reading Date:",
+                      self.odometer_reading_date)
         layout.addRow("Notes:",                       self.notes)
 
         buttons = QDialogButtonBox(
@@ -786,7 +814,7 @@ class LogServiceDialog(QDialog):
         self.cost.setPrefix("$")
         self.cost.setDecimals(2)
 
-        self.shop  = QLineEdit()
+        self.shop = QLineEdit()
         self.shop.setPlaceholderText("Leave blank if DIY")
         self.notes = QTextEdit()
         self.notes.setFixedHeight(60)
@@ -814,13 +842,19 @@ class LogServiceDialog(QDialog):
 
         self._parts_table = QTableWidget()
         self._parts_table.setColumnCount(3)
-        self._parts_table.setHorizontalHeaderLabels(["Part Name", "Part Number", "Qty"])
-        self._parts_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self._parts_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._parts_table.setHorizontalHeaderLabels(
+            ["Part Name", "Part Number", "Qty"])
+        self._parts_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows)
+        self._parts_table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers)
         self._parts_table.setFixedHeight(110)
-        self._parts_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self._parts_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self._parts_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self._parts_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch)
+        self._parts_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.ResizeToContents)
+        self._parts_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.ResizeToContents)
         self._parts_table.verticalHeader().setVisible(False)
         parts_vbox.addWidget(self._parts_table)
 
@@ -880,7 +914,7 @@ class LogServiceDialog(QDialog):
 
     def _add_image_item(self, img_type: str, img_id, path: str, file_type: str = 'image'):
         if file_type == 'image':
-            pix  = QPixmap(path)
+            pix = QPixmap(path)
             icon = QIcon(pix.scaled(80, 60, Qt.AspectRatioMode.KeepAspectRatio,
                                     Qt.TransformationMode.SmoothTransformation)) if not pix.isNull() else QIcon()
         else:
@@ -914,13 +948,15 @@ class LogServiceDialog(QDialog):
         self._parts_table.setRowCount(len(self._parts_data))
         for row, p in enumerate(self._parts_data):
             self._parts_table.setItem(row, 0, QTableWidgetItem(p["name"]))
-            self._parts_table.setItem(row, 1, QTableWidgetItem(p["part_number"]))
+            self._parts_table.setItem(
+                row, 1, QTableWidgetItem(p["part_number"]))
             qty = QTableWidgetItem(str(p["quantity"]))
-            qty.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            qty.setTextAlignment(Qt.AlignmentFlag.AlignRight |
+                                 Qt.AlignmentFlag.AlignVCenter)
             self._parts_table.setItem(row, 2, qty)
 
     def _add_part(self):
-        vid       = self.vehicle_combo.currentData()
+        vid = self.vehicle_combo.currentData()
         all_parts = self._db.get_all_parts(vid)
         if not all_parts:
             QMessageBox.information(
@@ -958,9 +994,11 @@ class LogServiceDialog(QDialog):
 
     def _populate_from_entry(self, entry):
         if entry["service_date"]:
-            self.service_date.setDate(QDate.fromString(entry["service_date"], "yyyy-MM-dd"))
+            self.service_date.setDate(QDate.fromString(
+                entry["service_date"], "yyyy-MM-dd"))
         if entry["mileage_at_service"]:
-            self.mileage.setValue(km_to_unit(entry["mileage_at_service"], self._unit))
+            self.mileage.setValue(km_to_unit(
+                entry["mileage_at_service"], self._unit))
         if entry["cost"]:
             self.cost.setValue(entry["cost"])
         if entry["shop"]:
@@ -985,7 +1023,8 @@ class LogServiceDialog(QDialog):
             try:
                 dest = dlg.get_destination_path()
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Could not save attachment:\n{e}")
+                QMessageBox.critical(
+                    self, "Error", f"Could not save attachment:\n{e}")
                 return
             ft = _get_file_type(dest)
             self._staged_images.append(dest)
@@ -999,7 +1038,7 @@ class LogServiceDialog(QDialog):
         if not meta:
             return
         path = meta["path"]
-        ft   = meta.get("file_type") or _get_file_type(path)
+        ft = meta.get("file_type") or _get_file_type(path)
         image_paths, img_row = [], 0
         if ft == "image":
             for i in range(self._staged_list.count()):
@@ -1119,12 +1158,14 @@ class MaintenanceItemDialog(QDialog):
         self.interval_dist.setRange(0, 999_999)
         self.interval_dist.setSingleStep(500)
         self.interval_dist.setSpecialValueText("None")
-        self.interval_dist.setValue(km_to_unit(item["interval_miles"], unit) if item and item["interval_miles"] else 0)
+        self.interval_dist.setValue(km_to_unit(
+            item["interval_miles"], unit) if item and item["interval_miles"] else 0)
 
         self.interval_months = QSpinBox()
         self.interval_months.setRange(0, 120)
         self.interval_months.setSpecialValueText("None")
-        self.interval_months.setValue(item["interval_months"] or 0 if item else 0)
+        self.interval_months.setValue(
+            item["interval_months"] or 0 if item else 0)
 
         layout.addRow("Service Name *:",              self.name)
         layout.addRow(f"Distance interval ({unit}):", self.interval_dist)
@@ -1146,13 +1187,19 @@ class MaintenanceItemDialog(QDialog):
 
         self._parts_table = QTableWidget()
         self._parts_table.setColumnCount(3)
-        self._parts_table.setHorizontalHeaderLabels(["Part Name", "Part Number", "Qty"])
-        self._parts_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self._parts_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._parts_table.setHorizontalHeaderLabels(
+            ["Part Name", "Part Number", "Qty"])
+        self._parts_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows)
+        self._parts_table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers)
         self._parts_table.setFixedHeight(110)
-        self._parts_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self._parts_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self._parts_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self._parts_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch)
+        self._parts_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.ResizeToContents)
+        self._parts_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.ResizeToContents)
         self._parts_table.verticalHeader().setVisible(False)
         parts_vbox.addWidget(self._parts_table)
 
@@ -1215,9 +1262,11 @@ class MaintenanceItemDialog(QDialog):
         self._parts_table.setRowCount(len(self._parts_data))
         for row, p in enumerate(self._parts_data):
             self._parts_table.setItem(row, 0, QTableWidgetItem(p["name"]))
-            self._parts_table.setItem(row, 1, QTableWidgetItem(p["part_number"]))
+            self._parts_table.setItem(
+                row, 1, QTableWidgetItem(p["part_number"]))
             qty = QTableWidgetItem(str(p["quantity"]))
-            qty.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            qty.setTextAlignment(Qt.AlignmentFlag.AlignRight |
+                                 Qt.AlignmentFlag.AlignVCenter)
             self._parts_table.setItem(row, 2, qty)
 
     def _add_part(self):
@@ -1260,7 +1309,7 @@ class MaintenanceItemDialog(QDialog):
 
     def _add_file_item(self, tag: str, file_id, path: str, file_type: str = 'image'):
         if file_type == 'image':
-            pix  = QPixmap(path)
+            pix = QPixmap(path)
             icon = QIcon(pix.scaled(80, 60, Qt.AspectRatioMode.KeepAspectRatio,
                                     Qt.TransformationMode.SmoothTransformation)) if not pix.isNull() else QIcon()
         else:
@@ -1283,7 +1332,8 @@ class MaintenanceItemDialog(QDialog):
             try:
                 dest = dlg.get_destination_path()
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Could not save attachment:\n{e}")
+                QMessageBox.critical(
+                    self, "Error", f"Could not save attachment:\n{e}")
                 return
             ft = _get_file_type(dest)
             self._staged_files.append(dest)
@@ -1297,7 +1347,7 @@ class MaintenanceItemDialog(QDialog):
         if not meta:
             return
         path = meta["path"]
-        ft   = meta.get("file_type") or _get_file_type(path)
+        ft = meta.get("file_type") or _get_file_type(path)
         image_paths, img_row = [], 0
         if ft == "image":
             for i in range(self._staged_list.count()):
@@ -1350,7 +1400,8 @@ class MaintenanceItemDialog(QDialog):
             QMessageBox.warning(self, "Required", "Service name is required.")
             return
         if self.interval_dist.value() == 0 and self.interval_months.value() == 0:
-            QMessageBox.warning(self, "Required", "At least one interval (distance or months) is required.")
+            QMessageBox.warning(
+                self, "Required", "At least one interval (distance or months) is required.")
             return
         self.accept()
 
@@ -1372,14 +1423,15 @@ class ImageViewerDialog(QDialog):
         self._paths = paths
         self._index = index
         self._pixmap = QPixmap()
-        self._scale  = 1.0
-        self._fit    = True
+        self._scale = 1.0
+        self._fit = True
         self._build_ui()
         self.resize(900, 650)
         self._load_image()
 
     def _build_ui(self):
-        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint)
+        self.setWindowFlags(self.windowFlags() |
+                            Qt.WindowType.WindowMaximizeButtonHint)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
@@ -1427,7 +1479,8 @@ class ImageViewerDialog(QDialog):
             return
         self._pixmap = QPixmap(self._paths[self._index])
         name = os.path.basename(self._paths[self._index])
-        self.setWindowTitle(f"{name}  ({self._index + 1} of {len(self._paths)})")
+        self.setWindowTitle(
+            f"{name}  ({self._index + 1} of {len(self._paths)})")
         self._prev_btn.setEnabled(self._index > 0)
         self._next_btn.setEnabled(self._index < len(self._paths) - 1)
         self._apply_display()
@@ -1445,7 +1498,7 @@ class ImageViewerDialog(QDialog):
             self._scale = scaled.width() / self._pixmap.width()
         else:
             scaled = self._pixmap.scaled(
-                round(self._pixmap.width()  * self._scale),
+                round(self._pixmap.width() * self._scale),
                 round(self._pixmap.height() * self._scale),
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
@@ -1520,7 +1573,8 @@ class VideoViewerDialog(QDialog):
     def __init__(self, parent, path: str):
         super().__init__(parent)
         self.setWindowTitle(os.path.basename(path))
-        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint)
+        self.setWindowFlags(self.windowFlags() |
+                            Qt.WindowType.WindowMaximizeButtonHint)
         self._path = path
         self._build_ui()
         self.resize(860, 560)
@@ -1534,7 +1588,7 @@ class VideoViewerDialog(QDialog):
         layout.addWidget(self._video_widget)
 
         self._player = QMediaPlayer(self)
-        self._audio  = QAudioOutput(self)
+        self._audio = QAudioOutput(self)
         self._player.setAudioOutput(self._audio)
         self._player.setVideoOutput(self._video_widget)
         self._player.setSource(QUrl.fromLocalFile(self._path))
@@ -1553,7 +1607,8 @@ class VideoViewerDialog(QDialog):
 
         self._time_label = QLabel("0:00 / 0:00")
         self._time_label.setFixedWidth(90)
-        self._time_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._time_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         controls.addWidget(self._time_label)
 
         layout.addLayout(controls)
@@ -1605,7 +1660,8 @@ class PdfViewerDialog(QDialog):
     def __init__(self, parent, path: str):
         super().__init__(parent)
         self.setWindowTitle(os.path.basename(path))
-        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint)
+        self.setWindowFlags(self.windowFlags() |
+                            Qt.WindowType.WindowMaximizeButtonHint)
         self._zoom = 1.0
         self._build_ui(path)
         self.resize(800, 960)
@@ -1702,12 +1758,14 @@ class AddImageDialog(QDialog):
 
         self._folder_combo = QComboBox()
         self._folder_combo.setEditable(True)
-        self._folder_combo.lineEdit().setPlaceholderText("Resources root  (type a name to create a subfolder)")
+        self._folder_combo.lineEdit().setPlaceholderText(
+            "Resources root  (type a name to create a subfolder)")
         self._populate_folders()
         layout.addRow("Folder:", self._folder_combo)
 
         self._filename_edit = QLineEdit()
-        self._filename_edit.setPlaceholderText("Auto-filled when image is selected")
+        self._filename_edit.setPlaceholderText(
+            "Auto-filled when image is selected")
         layout.addRow("Filename *:", self._filename_edit)
 
         buttons = QDialogButtonBox(
@@ -1729,7 +1787,7 @@ class AddImageDialog(QDialog):
                     for sub in sorted(os.scandir(top.path), key=lambda e: e.name.lower()):
                         if sub.is_dir():
                             display = f"  {top.name} / {sub.name}"
-                            value   = f"{top.name}/{sub.name}"
+                            value = f"{top.name}/{sub.name}"
                             self._folder_combo.addItem(display, value)
                 except OSError:
                     pass
@@ -1748,7 +1806,8 @@ class AddImageDialog(QDialog):
 
     def _validate_and_accept(self):
         if not self._source_path:
-            QMessageBox.warning(self, "Required", "Please select an image file.")
+            QMessageBox.warning(
+                self, "Required", "Please select an image file.")
             return
         if not self._filename_edit.text().strip():
             QMessageBox.warning(self, "Required", "Please enter a filename.")
@@ -1845,13 +1904,16 @@ class GarageTab(QWidget):
 
         self.table = QTableWidget()
         self.table.setColumnCount(9)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.doubleClicked.connect(self._edit_vehicle)
-        self.table.currentCellChanged.connect(lambda row, *_: self._row_changed(row))
+        self.table.currentCellChanged.connect(
+            lambda row, *_: self._row_changed(row))
         layout.addWidget(self.table)
 
         # images section
@@ -1886,7 +1948,7 @@ class GarageTab(QWidget):
             "Plate", f"Odometer ({unit})", "Odometer Date",
         ])
 
-        vehicles          = self.db.get_all_vehicles()
+        vehicles = self.db.get_all_vehicles()
         self._vehicle_ids = [v["id"] for v in vehicles]
         self.table.setRowCount(len(vehicles))
 
@@ -1900,7 +1962,8 @@ class GarageTab(QWidget):
             for col, text in enumerate(cells):
                 item = QTableWidgetItem(text)
                 if col == 7:
-                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self.table.setItem(row, col, item)
 
         self._load_images(self.selected_id())
@@ -1924,7 +1987,8 @@ class GarageTab(QWidget):
         vid = self.selected_id()
         if vid is None:
             return
-        dlg = VehicleDialog(self, self.db.get_vehicle(vid), unit=self.get_unit())
+        dlg = VehicleDialog(self, self.db.get_vehicle(vid),
+                            unit=self.get_unit())
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self.db.update_vehicle(vid, dlg.get_data())
             self.refresh()
@@ -1933,7 +1997,7 @@ class GarageTab(QWidget):
         vid = self.selected_id()
         if vid is None:
             return
-        v    = self.db.get_vehicle(vid)
+        v = self.db.get_vehicle(vid)
         name = v["nickname"] or f"{v['year']} {v['make']} {v['model']}"
         if QMessageBox.question(
             self, "Delete Vehicle", f"Delete '{name}'?",
@@ -1943,13 +2007,13 @@ class GarageTab(QWidget):
             self.refresh()
 
     def _load_images(self, vehicle_id: int | None):
-        self._image_ids   = []
+        self._image_ids = []
         self._image_paths = []
         self._image_list.clear()
         if vehicle_id is None:
             return
         images = self.db.get_vehicle_images(vehicle_id)
-        self._image_ids   = [img["id"]   for img in images]
+        self._image_ids = [img["id"] for img in images]
         self._image_paths = [img["path"] for img in images]
         for path in self._image_paths:
             pix = QPixmap(path)
@@ -1961,7 +2025,8 @@ class GarageTab(QWidget):
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation,
                 ))
-            self._image_list.addItem(QListWidgetItem(icon, os.path.basename(path)))
+            self._image_list.addItem(
+                QListWidgetItem(icon, os.path.basename(path)))
 
     def _add_image(self):
         resources_folder = self.get_resources_folder()
@@ -1973,14 +2038,16 @@ class GarageTab(QWidget):
             return
         vid = self.selected_id()
         if vid is None:
-            QMessageBox.information(self, "No Vehicle Selected", "Select a vehicle before adding an image.")
+            QMessageBox.information(
+                self, "No Vehicle Selected", "Select a vehicle before adding an image.")
             return
         dlg = AddImageDialog(self, resources_folder)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             try:
                 dest = dlg.get_destination_path()
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Could not save image:\n{e}")
+                QMessageBox.critical(
+                    self, "Error", f"Could not save image:\n{e}")
                 return
             self.db.add_vehicle_image(vid, dest)
             self._load_images(vid)
@@ -2034,7 +2101,8 @@ class ScheduleTab(QWidget):
         layout.setContentsMargins(6, 6, 6, 6)
 
         top_row = QHBoxLayout()
-        self.vehicle_label = QLabel("Select a vehicle in the Garage tab to view its schedule.")
+        self.vehicle_label = QLabel(
+            "Select a vehicle in the Garage tab to view its schedule.")
         top_row.addWidget(self.vehicle_label)
         top_row.addStretch()
         self.log_btn = QPushButton("Log Service")
@@ -2045,10 +2113,12 @@ class ScheduleTab(QWidget):
 
         self.table = QTableWidget()
         self.table.setColumnCount(7)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.doubleClicked.connect(self._edit_or_log_selected)
         layout.addWidget(self.table)
@@ -2068,43 +2138,47 @@ class ScheduleTab(QWidget):
             self.table.setRowCount(0)
             self._item_ids = []
             self.log_btn.setEnabled(False)
-            self.vehicle_label.setText("Select a vehicle in the Garage tab to view its schedule.")
+            self.vehicle_label.setText(
+                "Select a vehicle in the Garage tab to view its schedule.")
             return
 
         vehicle = self.db.get_vehicle(self._vehicle_id)
-        name    = vehicle["nickname"] or f"{vehicle['year']} {vehicle['make']} {vehicle['model']}"
+        name = vehicle["nickname"] or f"{vehicle['year']} {vehicle['make']} {vehicle['model']}"
         self.vehicle_label.setText(
             f"<b>{name}</b> &nbsp;·&nbsp; Odometer: {km_to_unit(vehicle['current_mileage'], unit):,} {unit}"
         )
         self.log_btn.setEnabled(True)
 
-        rows               = self.db.get_schedule(self._vehicle_id)
-        self._item_ids     = [item["id"] for item, _, _ in rows]
+        rows = self.db.get_schedule(self._vehicle_id)
+        self._item_ids = [item["id"] for item, _, _ in rows]
         self._last_entries = [last for _, last, _ in rows]
         self.table.setRowCount(len(rows))
 
         for row, (item, last, v) in enumerate(rows):
             interval_parts = []
             if item["interval_miles"]:
-                interval_parts.append(f"{km_to_unit(item['interval_miles'], unit):,} {unit}")
+                interval_parts.append(
+                    f"{km_to_unit(item['interval_miles'], unit):,} {unit}")
             if item["interval_months"]:
                 interval_parts.append(f"{item['interval_months']} mo")
             interval_str = " / ".join(interval_parts) if interval_parts else "—"
 
             status, next_dist, next_date = compute_status(item, last, v)
 
-            last_done     = last["service_date"] if last else "Never"
-            at_dist       = f"{km_to_unit(last['mileage_at_service'], unit):,}" if last and last["mileage_at_service"] else "—"
+            last_done = last["service_date"] if last else "Never"
+            at_dist = f"{km_to_unit(last['mileage_at_service'], unit):,}" if last and last["mileage_at_service"] else "—"
             next_dist_str = f"{km_to_unit(next_dist, unit):,}" if next_dist is not None else "—"
             next_date_str = next_date.isoformat() if next_date else "—"
 
             color = STATUS_COLORS[status]
-            cells = [item["name"], interval_str, last_done, at_dist, next_dist_str, next_date_str, status]
+            cells = [item["name"], interval_str, last_done,
+                     at_dist, next_dist_str, next_date_str, status]
 
             for col, text in enumerate(cells):
                 cell = QTableWidgetItem(text)
                 if col in (3, 4):
-                    cell.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    cell.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 if col == 6:
                     cell.setForeground(QBrush(color))
                 self.table.setItem(row, col, cell)
@@ -2126,7 +2200,8 @@ class ScheduleTab(QWidget):
         if dlg.exec() == QDialog.DialogCode.Accepted:
             entry_id = self.db.log_service(dlg.get_data())
             for path in dlg.get_staged_images():
-                self.db.add_service_log_image(entry_id, path, _get_file_type(path))
+                self.db.add_service_log_image(
+                    entry_id, path, _get_file_type(path))
             self.db.set_service_log_parts(entry_id, dlg.get_parts_data())
             self._on_service_logged()
 
@@ -2134,7 +2209,8 @@ class ScheduleTab(QWidget):
         row = self.table.currentRow()
         if row < 0 or self._vehicle_id is None:
             return
-        last = self._last_entries[row] if row < len(self._last_entries) else None
+        last = self._last_entries[row] if row < len(
+            self._last_entries) else None
         if last is None:
             self._log_service()
             return
@@ -2156,7 +2232,8 @@ class ScheduleTab(QWidget):
                 except OSError:
                     pass
             for path in dlg.get_staged_images():
-                self.db.add_service_log_image(last["id"], path, _get_file_type(path))
+                self.db.add_service_log_image(
+                    last["id"], path, _get_file_type(path))
             self.db.set_service_log_parts(last["id"], dlg.get_parts_data())
             self._on_service_logged()
 
@@ -2187,7 +2264,8 @@ class ServicesTab(QWidget):
         layout.setContentsMargins(6, 6, 6, 6)
 
         top_row = QHBoxLayout()
-        self.vehicle_label = QLabel("Select a vehicle in the Garage tab to manage its services.")
+        self.vehicle_label = QLabel(
+            "Select a vehicle in the Garage tab to manage its services.")
         top_row.addWidget(self.vehicle_label)
         top_row.addStretch()
         for label, slot in [
@@ -2202,13 +2280,16 @@ class ServicesTab(QWidget):
 
         self.table = QTableWidget()
         self.table.setColumnCount(3)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.doubleClicked.connect(self._edit_item)
-        self.table.currentCellChanged.connect(lambda row, *_: self._row_changed(row))
+        self.table.currentCellChanged.connect(
+            lambda row, *_: self._row_changed(row))
         layout.addWidget(self.table)
 
         att_hdr = QHBoxLayout()
@@ -2248,25 +2329,28 @@ class ServicesTab(QWidget):
         if self._vehicle_id is None:
             self.table.setRowCount(0)
             self._item_ids = []
-            self.vehicle_label.setText("Select a vehicle in the Garage tab to manage its services.")
+            self.vehicle_label.setText(
+                "Select a vehicle in the Garage tab to manage its services.")
             self._load_files(None)
             return
 
         vehicle = self.db.get_vehicle(self._vehicle_id)
-        name    = vehicle["nickname"] or f"{vehicle['year']} {vehicle['make']} {vehicle['model']}"
+        name = vehicle["nickname"] or f"{vehicle['year']} {vehicle['make']} {vehicle['model']}"
         self.vehicle_label.setText(f"<b>{name}</b>")
 
-        items          = self.db.get_maintenance_items(self._vehicle_id)
+        items = self.db.get_maintenance_items(self._vehicle_id)
         self._item_ids = [item["id"] for item in items]
         self.table.setRowCount(len(items))
 
         for row, item in enumerate(items):
-            dist_str  = f"{km_to_unit(item['interval_miles'], unit):,}" if item["interval_miles"] else "—"
-            month_str = str(item["interval_months"])  if item["interval_months"] else "—"
+            dist_str = f"{km_to_unit(item['interval_miles'], unit):,}" if item["interval_miles"] else "—"
+            month_str = str(item["interval_months"]
+                            ) if item["interval_months"] else "—"
             for col, text in enumerate([item["name"], dist_str, month_str]):
                 cell = QTableWidgetItem(text)
                 if col in (1, 2):
-                    cell.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    cell.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self.table.setItem(row, col, cell)
 
         self._load_files(self._selected_id())
@@ -2276,10 +2360,11 @@ class ServicesTab(QWidget):
         return self._item_ids[row] if 0 <= row < len(self._item_ids) else None
 
     def _row_changed(self, row):
-        self._load_files(self._item_ids[row] if 0 <= row < len(self._item_ids) else None)
+        self._load_files(self._item_ids[row] if 0 <= row < len(
+            self._item_ids) else None)
 
     def _load_files(self, item_id: int | None):
-        self._file_ids   = []
+        self._file_ids = []
         self._file_paths = []
         self._file_types = []
         self._file_list.clear()
@@ -2290,12 +2375,13 @@ class ServicesTab(QWidget):
             self._file_paths.append(f["path"])
             self._file_types.append(f["file_type"])
             if f["file_type"] == "image":
-                pix  = QPixmap(f["path"])
+                pix = QPixmap(f["path"])
                 icon = QIcon(pix.scaled(100, 75, Qt.AspectRatioMode.KeepAspectRatio,
                                         Qt.TransformationMode.SmoothTransformation)) if not pix.isNull() else QIcon()
             else:
                 icon = QIcon()
-            self._file_list.addItem(QListWidgetItem(icon, os.path.basename(f["path"])))
+            self._file_list.addItem(QListWidgetItem(
+                icon, os.path.basename(f["path"])))
 
     def _add_attachment(self):
         rf = self.get_resources_folder() if self.get_resources_folder else ""
@@ -2307,14 +2393,16 @@ class ServicesTab(QWidget):
             return
         iid = self._selected_id()
         if iid is None:
-            QMessageBox.information(self, "No Service Selected", "Select a service before adding an attachment.")
+            QMessageBox.information(
+                self, "No Service Selected", "Select a service before adding an attachment.")
             return
         dlg = AddAttachmentDialog(self, rf)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             try:
                 dest = dlg.get_destination_path()
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Could not save attachment:\n{e}")
+                QMessageBox.critical(
+                    self, "Error", f"Could not save attachment:\n{e}")
                 return
             self.db.add_maintenance_item_file(iid, dest, _get_file_type(dest))
             self._load_files(iid)
@@ -2340,10 +2428,12 @@ class ServicesTab(QWidget):
         row = self._file_list.currentRow()
         if row < 0 or row >= len(self._file_paths):
             return
-        path        = self._file_paths[row]
-        ft          = self._file_types[row] if row < len(self._file_types) else _get_file_type(path)
-        image_paths = [p for p, t in zip(self._file_paths, self._file_types) if t == "image"]
-        img_row     = self._file_types[:row].count("image")
+        path = self._file_paths[row]
+        ft = self._file_types[row] if row < len(
+            self._file_types) else _get_file_type(path)
+        image_paths = [p for p, t in zip(
+            self._file_paths, self._file_types) if t == "image"]
+        img_row = self._file_types[:row].count("image")
         _open_file(self, path, ft, image_paths, img_row)
 
     def _add_item(self):
@@ -2354,9 +2444,11 @@ class ServicesTab(QWidget):
                                     get_resources_folder=self.get_resources_folder,
                                     vehicle_id=self._vehicle_id)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            item_id = self.db.add_maintenance_item(self._vehicle_id, dlg.get_data())
+            item_id = self.db.add_maintenance_item(
+                self._vehicle_id, dlg.get_data())
             for path in dlg.get_staged_files():
-                self.db.add_maintenance_item_file(item_id, path, _get_file_type(path))
+                self.db.add_maintenance_item_file(
+                    item_id, path, _get_file_type(path))
             self.db.set_maintenance_item_parts(item_id, dlg.get_parts_data())
             self.refresh()
 
@@ -2364,7 +2456,8 @@ class ServicesTab(QWidget):
         iid = self._selected_id()
         if iid is None:
             return
-        items = {item["id"]: item for item in self.db.get_maintenance_items(self._vehicle_id)}
+        items = {item["id"]: item for item in self.db.get_maintenance_items(
+            self._vehicle_id)}
         dlg = MaintenanceItemDialog(self, items[iid], unit=self.get_unit(),
                                     db=self.db,
                                     get_resources_folder=self.get_resources_folder,
@@ -2378,7 +2471,8 @@ class ServicesTab(QWidget):
                 except OSError:
                     pass
             for path in dlg.get_staged_files():
-                self.db.add_maintenance_item_file(iid, path, _get_file_type(path))
+                self.db.add_maintenance_item_file(
+                    iid, path, _get_file_type(path))
             self.db.set_maintenance_item_parts(iid, dlg.get_parts_data())
             self.refresh()
 
@@ -2386,8 +2480,9 @@ class ServicesTab(QWidget):
         iid = self._selected_id()
         if iid is None:
             return
-        items     = {item["id"]: item for item in self.db.get_maintenance_items(self._vehicle_id)}
-        name      = items[iid]["name"]
+        items = {item["id"]: item for item in self.db.get_maintenance_items(
+            self._vehicle_id)}
+        name = items[iid]["name"]
         log_count = self.db.get_service_log_count_for_item(iid)
 
         msg = f"Delete '{name}'?"
@@ -2429,7 +2524,8 @@ class ServiceLogTab(QWidget):
         layout.setContentsMargins(6, 6, 6, 6)
 
         top_row = QHBoxLayout()
-        self.vehicle_label = QLabel("Select a vehicle in the Garage tab to view its service log.")
+        self.vehicle_label = QLabel(
+            "Select a vehicle in the Garage tab to view its service log.")
         top_row.addWidget(self.vehicle_label)
         top_row.addStretch()
         edit_btn = QPushButton("Edit Entry")
@@ -2445,12 +2541,15 @@ class ServiceLogTab(QWidget):
 
         self.table = QTableWidget()
         self.table.setColumnCount(5)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.currentCellChanged.connect(lambda row, *_: self._row_changed(row))
+        self.table.currentCellChanged.connect(
+            lambda row, *_: self._row_changed(row))
         self.table.doubleClicked.connect(self._edit_entry)
         layout.addWidget(self.table)
 
@@ -2491,7 +2590,8 @@ class ServiceLogTab(QWidget):
         if self._vehicle_id is None:
             self.table.setRowCount(0)
             self._log_ids = []
-            self.vehicle_label.setText("Select a vehicle in the Garage tab to view its service log.")
+            self.vehicle_label.setText(
+                "Select a vehicle in the Garage tab to view its service log.")
             self._load_images(None)
             return
 
@@ -2511,7 +2611,8 @@ class ServiceLogTab(QWidget):
             ]):
                 cell = QTableWidgetItem(text)
                 if col in (2, 3):
-                    cell.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    cell.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self.table.setItem(row, col, cell)
 
         self._load_images(self._selected_log_id())
@@ -2521,22 +2622,23 @@ class ServiceLogTab(QWidget):
         return self._log_ids[row] if 0 <= row < len(self._log_ids) else None
 
     def _row_changed(self, row):
-        self._load_images(self._log_ids[row] if 0 <= row < len(self._log_ids) else None)
+        self._load_images(self._log_ids[row] if 0 <= row < len(
+            self._log_ids) else None)
 
     def _load_images(self, log_id: int | None):
-        self._image_ids   = []
+        self._image_ids = []
         self._image_paths = []
-        self._file_types  = []
+        self._file_types = []
         self._image_list.clear()
         if log_id is None:
             return
         attachments = self.db.get_service_log_images(log_id)
-        self._image_ids   = [a["id"]        for a in attachments]
-        self._image_paths = [a["path"]       for a in attachments]
-        self._file_types  = [a["file_type"]  for a in attachments]
+        self._image_ids = [a["id"] for a in attachments]
+        self._image_paths = [a["path"] for a in attachments]
+        self._file_types = [a["file_type"] for a in attachments]
         for path, ft in zip(self._image_paths, self._file_types):
             if ft == "image":
-                pix  = QPixmap(path)
+                pix = QPixmap(path)
                 icon = QIcon(pix.scaled(
                     100, 75,
                     Qt.AspectRatioMode.KeepAspectRatio,
@@ -2544,7 +2646,8 @@ class ServiceLogTab(QWidget):
                 )) if not pix.isNull() else QIcon()
             else:
                 icon = QIcon()
-            self._image_list.addItem(QListWidgetItem(icon, os.path.basename(path)))
+            self._image_list.addItem(
+                QListWidgetItem(icon, os.path.basename(path)))
 
     def _add_attachment(self):
         resources_folder = self.get_resources_folder()
@@ -2556,14 +2659,16 @@ class ServiceLogTab(QWidget):
             return
         lid = self._selected_log_id()
         if lid is None:
-            QMessageBox.information(self, "No Entry Selected", "Select a service log entry before adding an attachment.")
+            QMessageBox.information(
+                self, "No Entry Selected", "Select a service log entry before adding an attachment.")
             return
         dlg = AddAttachmentDialog(self, resources_folder)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             try:
                 dest = dlg.get_destination_path()
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Could not save attachment:\n{e}")
+                QMessageBox.critical(
+                    self, "Error", f"Could not save attachment:\n{e}")
                 return
             self.db.add_service_log_image(lid, dest, _get_file_type(dest))
             self._load_images(lid)
@@ -2589,10 +2694,12 @@ class ServiceLogTab(QWidget):
         row = self._image_list.currentRow()
         if row < 0 or row >= len(self._image_paths):
             return
-        path        = self._image_paths[row]
-        ft          = self._file_types[row] if row < len(self._file_types) else _get_file_type(path)
-        image_paths = [p for p, t in zip(self._image_paths, self._file_types) if t == "image"]
-        img_row     = self._file_types[:row].count("image")
+        path = self._image_paths[row]
+        ft = self._file_types[row] if row < len(
+            self._file_types) else _get_file_type(path)
+        image_paths = [p for p, t in zip(
+            self._image_paths, self._file_types) if t == "image"]
+        img_row = self._file_types[:row].count("image")
         _open_file(self, path, ft, image_paths, img_row)
 
     def _edit_entry(self):
@@ -2634,24 +2741,29 @@ class ServiceLogTab(QWidget):
         if dlg.exec() == QDialog.DialogCode.Accepted:
             entry_id = self.db.log_service(dlg.get_data())
             for path in dlg.get_staged_images():
-                self.db.add_service_log_image(entry_id, path, _get_file_type(path))
+                self.db.add_service_log_image(
+                    entry_id, path, _get_file_type(path))
             self.db.set_service_log_parts(entry_id, dlg.get_parts_data())
             self._on_service_logged()
 
     def _generate_report(self):
         if self._vehicle_id is None:
-            QMessageBox.information(self, "No Vehicle", "Select a vehicle in the Garage tab first.")
+            QMessageBox.information(
+                self, "No Vehicle", "Select a vehicle in the Garage tab first.")
             return
         opts = ReportOptionsDialog(self)
         if opts.exec() != QDialog.DialogCode.Accepted:
             return
         date_from, date_to = opts.get_range()
-        vehicle   = self.db.get_vehicle(self._vehicle_id)
-        entries   = self.db.get_service_log_entries_range(self._vehicle_id, date_from, date_to)
-        parts_map = {e["id"]: self.db.get_service_log_parts(e["id"]) for e in entries}
-        unit      = self.get_unit()
-        html      = _build_report_html(vehicle, entries, unit, date_from, date_to, parts_map)
-        name      = vehicle["nickname"] or f"{vehicle['year']} {vehicle['make']} {vehicle['model']}"
+        vehicle = self.db.get_vehicle(self._vehicle_id)
+        entries = self.db.get_service_log_entries_range(
+            self._vehicle_id, date_from, date_to)
+        parts_map = {e["id"]: self.db.get_service_log_parts(
+            e["id"]) for e in entries}
+        unit = self.get_unit()
+        html = _build_report_html(
+            vehicle, entries, unit, date_from, date_to, parts_map)
+        name = vehicle["nickname"] or f"{vehicle['year']} {vehicle['make']} {vehicle['model']}"
         ServiceReportDialog(self, html=html, vehicle_name=name,
                             date_from=date_from, date_to=date_to).exec()
 
@@ -2670,16 +2782,16 @@ def _build_report_html(vehicle, entries, unit: str, date_from: str, date_to: str
         except Exception:
             return d
 
-    nick      = vehicle["nickname"] or ""
+    nick = vehicle["nickname"] or ""
     full_name = f"{vehicle['year']} {vehicle['make']} {vehicle['model']}"
     if vehicle["trim"]:
         full_name += f" {vehicle['trim']}"
     display_name = f"{full_name} ({nick})" if nick else full_name
-    vin   = vehicle["vin"]           or ""
+    vin = vehicle["vin"] or ""
     plate = vehicle["license_plate"] or ""
 
     total_cost = sum(e["cost"] for e in entries if e["cost"])
-    today_str  = _date.today().strftime("%B %d, %Y")
+    today_str = _date.today().strftime("%B %d, %Y")
 
     info_rows = f'<tr><td><b>Vehicle:</b></td><td>{display_name}</td></tr>'
     if vin:
@@ -2693,15 +2805,16 @@ def _build_report_html(vehicle, entries, unit: str, date_from: str, date_to: str
 
     rows_html = ""
     for e in entries:
-        dist  = f"{km_to_unit(e['mileage_at_service'], unit):,}" if e["mileage_at_service"] else "—"
-        cost  = f"${e['cost']:.2f}" if e["cost"] else "—"
-        shop  = e["shop"]  or "—"
+        dist = f"{km_to_unit(e['mileage_at_service'], unit):,}" if e["mileage_at_service"] else "—"
+        cost = f"${e['cost']:.2f}" if e["cost"] else "—"
+        shop = e["shop"] or "—"
         notes = e["notes"] or ""
 
         parts = parts_map.get(e["id"], [])
         parts_str = ""
         if parts:
-            items = ", ".join(f"{p['name']} &times;{p['quantity']}" for p in parts)
+            items = ", ".join(
+                f"{p['name']} &times;{p['quantity']}" for p in parts)
             parts_str = f'<br><span style="font-size:9pt;color:#555;">Parts: {items}</span>'
 
         notes_str = ""
@@ -2829,7 +2942,7 @@ class ReportOptionsDialog(QDialog):
         self.setMinimumWidth(300)
         layout = QFormLayout(self)
 
-        today      = QDate.currentDate()
+        today = QDate.currentDate()
         year_start = QDate(today.year(), 1, 1)
 
         self._date_from = QDateEdit(year_start)
@@ -2852,7 +2965,8 @@ class ReportOptionsDialog(QDialog):
 
     def _validate_and_accept(self):
         if self._date_from.date() > self._date_to.date():
-            QMessageBox.warning(self, "Invalid Range", "From date must not be after To date.")
+            QMessageBox.warning(self, "Invalid Range",
+                                "From date must not be after To date.")
             return
         self.accept()
 
@@ -2870,10 +2984,10 @@ class ServiceReportDialog(QDialog):
         self.setWindowTitle(f"Service Report — {vehicle_name}")
         self.setMinimumSize(740, 560)
         self.resize(820, 640)
-        self._html         = html
+        self._html = html
         self._vehicle_name = vehicle_name
-        self._date_from    = date_from
-        self._date_to      = date_to
+        self._date_from = date_from
+        self._date_to = date_to
         self._build_ui()
 
     def _build_ui(self):
@@ -2911,7 +3025,8 @@ class ServiceReportDialog(QDialog):
         layout.addLayout(btn_row)
 
     def _safe_filename(self) -> str:
-        safe = "".join(c if c.isalnum() or c in " _-" else "_" for c in self._vehicle_name)
+        safe = "".join(c if c.isalnum()
+                       or c in " _-" else "_" for c in self._vehicle_name)
         return f"{safe.strip()}_service_report_{self._date_from}_to_{self._date_to}"
 
     def _print(self):
@@ -2955,9 +3070,9 @@ class PartDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Edit Part" if part else "Add Part")
         self.setMinimumWidth(460)
-        self._db                   = db
+        self._db = db
         self._get_resources_folder = get_resources_folder
-        self._staged_images: list[str]   = []
+        self._staged_images: list[str] = []
         self._removed_images: list[dict] = []
         self._build_ui(part, vehicles or [], default_vehicle_id)
         if part and db:
@@ -2981,17 +3096,17 @@ class PartDialog(QDialog):
         def val(field):
             return (part[field] or "") if part else ""
 
-        self.name            = QLineEdit(val("name"))
-        self.part_number     = QLineEdit(val("part_number"))
+        self.name = QLineEdit(val("name"))
+        self.part_number = QLineEdit(val("part_number"))
         self.alt_part_number = QLineEdit(val("alt_part_number"))
-        self.supplier        = QLineEdit(val("supplier"))
-        self.url             = QLineEdit(val("url"))
-        self.price           = QDoubleSpinBox()
+        self.supplier = QLineEdit(val("supplier"))
+        self.url = QLineEdit(val("url"))
+        self.price = QDoubleSpinBox()
         self.price.setRange(0, 99_999)
         self.price.setPrefix("$")
         self.price.setDecimals(2)
         self.price.setValue(part["price"] or 0 if part else 0)
-        self.notes           = QTextEdit(val("notes"))
+        self.notes = QTextEdit(val("notes"))
         self.notes.setFixedHeight(60)
 
         layout.addRow("Vehicle *:",       self.vehicle_combo)
@@ -3043,7 +3158,7 @@ class PartDialog(QDialog):
 
     def _add_image_item(self, img_type: str, img_id, path: str, file_type: str = 'image'):
         if file_type == 'image':
-            pix  = QPixmap(path)
+            pix = QPixmap(path)
             icon = QIcon(pix.scaled(80, 60, Qt.AspectRatioMode.KeepAspectRatio,
                                     Qt.TransformationMode.SmoothTransformation)) if not pix.isNull() else QIcon()
         else:
@@ -3066,7 +3181,8 @@ class PartDialog(QDialog):
             try:
                 dest = dlg.get_destination_path()
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Could not save attachment:\n{e}")
+                QMessageBox.critical(
+                    self, "Error", f"Could not save attachment:\n{e}")
                 return
             ft = _get_file_type(dest)
             self._staged_images.append(dest)
@@ -3098,7 +3214,7 @@ class PartDialog(QDialog):
         if not meta:
             return
         path = meta["path"]
-        ft   = meta.get("file_type") or _get_file_type(path)
+        ft = meta.get("file_type") or _get_file_type(path)
         image_paths, img_row = [], 0
         if ft == "image":
             for i in range(self._staged_list.count()):
@@ -3147,7 +3263,8 @@ class PartDialog(QDialog):
         }
 
 
-PARTS_COLUMNS = ["Part Name", "Part #", "Alt Part #", "Supplier", "Price", "URL"]
+PARTS_COLUMNS = ["Part Name", "Part #",
+                 "Alt Part #", "Supplier", "Price", "URL"]
 
 
 class PartsTab(QWidget):
@@ -3156,7 +3273,7 @@ class PartsTab(QWidget):
         self.db = db
         self.get_resources_folder = get_resources_folder
         self._vehicle_id: int | None = None
-        self._part_ids:   list[int]  = []
+        self._part_ids:   list[int] = []
         self._build_ui()
         self.refresh()
 
@@ -3165,7 +3282,8 @@ class PartsTab(QWidget):
         layout.setContentsMargins(6, 6, 6, 6)
 
         top_row = QHBoxLayout()
-        self.vehicle_label = QLabel("Select a vehicle in the Garage tab to view its parts.")
+        self.vehicle_label = QLabel(
+            "Select a vehicle in the Garage tab to view its parts.")
         top_row.addWidget(self.vehicle_label)
         top_row.addStretch()
 
@@ -3184,9 +3302,11 @@ class PartsTab(QWidget):
         self.table = QTableWidget()
         self.table.setColumnCount(len(PARTS_COLUMNS))
         self.table.setHorizontalHeaderLabels(PARTS_COLUMNS)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.doubleClicked.connect(self._edit_part)
@@ -3200,15 +3320,16 @@ class PartsTab(QWidget):
         if self._vehicle_id is None:
             self.table.setRowCount(0)
             self._part_ids = []
-            self.vehicle_label.setText("Select a vehicle in the Garage tab to view its parts.")
+            self.vehicle_label.setText(
+                "Select a vehicle in the Garage tab to view its parts.")
             return
         vehicle = self.db.get_vehicle(self._vehicle_id)
-        name    = vehicle["nickname"] or f"{vehicle['year']} {vehicle['make']} {vehicle['model']}"
+        name = vehicle["nickname"] or f"{vehicle['year']} {vehicle['make']} {vehicle['model']}"
         self.vehicle_label.setText(f"<b>{name}</b>")
         self._load_parts()
 
     def _load_parts(self):
-        parts          = self.db.get_all_parts(self._vehicle_id)
+        parts = self.db.get_all_parts(self._vehicle_id)
         self._part_ids = [p["id"] for p in parts]
         self.table.setRowCount(len(parts))
 
@@ -3216,16 +3337,17 @@ class PartsTab(QWidget):
             price_str = f"${p['price']:.2f}" if p["price"] else "—"
             cells = [
                 p["name"],
-                p["part_number"]     or "—",
+                p["part_number"] or "—",
                 p["alt_part_number"] or "—",
-                p["supplier"]        or "—",
+                p["supplier"] or "—",
                 price_str,
-                p["url"]             or "—",
+                p["url"] or "—",
             ]
             for col, text in enumerate(cells):
                 cell = QTableWidgetItem(text)
                 if col == 4:
-                    cell.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    cell.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self.table.setItem(row, col, cell)
 
     def _selected_id(self) -> int | None:
@@ -3234,7 +3356,8 @@ class PartsTab(QWidget):
 
     def _add_part(self):
         if self._vehicle_id is None:
-            QMessageBox.information(self, "No Vehicle", "Select a vehicle in the Garage tab first.")
+            QMessageBox.information(
+                self, "No Vehicle", "Select a vehicle in the Garage tab first.")
             return
         dlg = PartDialog(
             self,
@@ -3292,7 +3415,8 @@ class PartsTab(QWidget):
         if url:
             QDesktopServices.openUrl(QUrl(url))
         else:
-            QMessageBox.information(self, "No URL", "No URL saved for this part.")
+            QMessageBox.information(
+                self, "No URL", "No URL saved for this part.")
 
 
 # ── settings tab ─────────────────────────────────────────────────────────────
@@ -3301,9 +3425,9 @@ class SettingsTab(QWidget):
     def __init__(self, db, apply_theme, apply_unit, save_resources_folder,
                  current_theme, current_unit, current_resources_folder):
         super().__init__()
-        self._db                   = db
-        self._apply_theme          = apply_theme
-        self._apply_unit           = apply_unit
+        self._db = db
+        self._apply_theme = apply_theme
+        self._apply_unit = apply_unit
         self._save_resources_folder = save_resources_folder
         self._build_ui(current_theme, current_unit, current_resources_folder)
 
@@ -3313,23 +3437,24 @@ class SettingsTab(QWidget):
         outer.setSpacing(16)
 
         # Theme
-        theme_box    = QGroupBox("Theme")
+        theme_box = QGroupBox("Theme")
         theme_layout = QVBoxLayout(theme_box)
-        self._dark_btn  = QRadioButton("Dark")
+        self._dark_btn = QRadioButton("Dark")
         self._light_btn = QRadioButton("Light")
         self._theme_grp = QButtonGroup(self)
         self._theme_grp.addButton(self._dark_btn,  0)
         self._theme_grp.addButton(self._light_btn, 1)
         theme_layout.addWidget(self._dark_btn)
         theme_layout.addWidget(self._light_btn)
-        (self._dark_btn if current_theme == "dark" else self._light_btn).setChecked(True)
+        (self._dark_btn if current_theme ==
+         "dark" else self._light_btn).setChecked(True)
         self._theme_grp.idClicked.connect(
             lambda bid: self._apply_theme("dark" if bid == 0 else "light")
         )
         outer.addWidget(theme_box)
 
         # Unit
-        unit_box    = QGroupBox("Distance Unit")
+        unit_box = QGroupBox("Distance Unit")
         unit_layout = QVBoxLayout(unit_box)
         self._km_btn = QRadioButton("Kilometers (km)")
         self._mi_btn = QRadioButton("Miles (mi)")
@@ -3345,9 +3470,9 @@ class SettingsTab(QWidget):
         outer.addWidget(unit_box)
 
         # Resources folder
-        res_box    = QGroupBox("Resources Folder")
+        res_box = QGroupBox("Resources Folder")
         res_layout = QVBoxLayout(res_box)
-        path_row   = QHBoxLayout()
+        path_row = QHBoxLayout()
         self._res_path = QLineEdit(current_resources_folder or "")
         self._res_path.setReadOnly(True)
         self._res_path.setPlaceholderText("No folder selected")
@@ -3362,10 +3487,10 @@ class SettingsTab(QWidget):
         outer.addWidget(res_box)
 
         # Default folders
-        folders_box    = QGroupBox("Use Default Folders")
+        folders_box = QGroupBox("Use Default Folders")
         folders_layout = QVBoxLayout(folders_box)
         self._folders_yes = QRadioButton("Yes")
-        self._folders_no  = QRadioButton("No")
+        self._folders_no = QRadioButton("No")
         self._folders_grp = QButtonGroup(self)
         self._folders_grp.addButton(self._folders_yes, 1)
         self._folders_grp.addButton(self._folders_no,  0)
@@ -3396,7 +3521,8 @@ class SettingsTab(QWidget):
 
         vehicles = self._db.get_all_vehicles()
         if not vehicles:
-            QMessageBox.information(self, "No Vehicles", "No vehicles found in the database.")
+            QMessageBox.information(
+                self, "No Vehicles", "No vehicles found in the database.")
             return
 
         subfolders = ["Parts", "Services", "Service Log"]
@@ -3413,7 +3539,8 @@ class SettingsTab(QWidget):
         if created:
             parts.append(f"Created: {', '.join(created)}")
         if skipped:
-            parts.append(f"Already existed (subfolders ensured): {', '.join(skipped)}")
+            parts.append(
+                f"Already existed (subfolders ensured): {', '.join(skipped)}")
         QMessageBox.information(self, "Folders Created", "\n".join(parts))
 
     def sync_theme(self, theme: str):
@@ -3424,7 +3551,8 @@ class SettingsTab(QWidget):
 
     def _browse_resources(self):
         start = self._res_path.text() or ""
-        folder = QFileDialog.getExistingDirectory(self, "Select Resources Folder", start)
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select Resources Folder", start)
         if folder:
             self._res_path.setText(folder)
             self._save_resources_folder(folder)
@@ -3434,7 +3562,8 @@ class SettingsTab(QWidget):
         if path:
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))
         else:
-            QMessageBox.information(self, "No Folder", "No resources folder has been selected.")
+            QMessageBox.information(
+                self, "No Folder", "No resources folder has been selected.")
 
 
 # ── main window ──────────────────────────────────────────────────────────────
@@ -3442,7 +3571,7 @@ class SettingsTab(QWidget):
 class VehicleApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.db       = DatabaseManager()
+        self.db = DatabaseManager()
         self.settings = QSettings("VehicleLog", "VehicleMaintenanceLog")
         self.setWindowTitle("Vehicle Maintenance Log")
         self.setMinimumSize(1000, 560)
@@ -3455,33 +3584,35 @@ class VehicleApp(QMainWindow):
         return self.settings.value("unit", "km")
 
     def _build_ui(self):
-        self.tabs          = QTabWidget()
-        self.garage_tab    = GarageTab(
+        self.tabs = QTabWidget()
+        self.garage_tab = GarageTab(
             self.db, self._on_vehicle_selected,
             lambda: self.unit,
             lambda: self.settings.value("resources_folder", ""),
         )
-        self.schedule_tab  = ScheduleTab(
+        self.schedule_tab = ScheduleTab(
             self.db, lambda: self.unit,
             self._on_service_logged,
             lambda: self.settings.value("resources_folder", ""),
         )
-        self.log_tab       = ServiceLogTab(
+        self.log_tab = ServiceLogTab(
             self.db,
             lambda: self.unit,
             lambda: self.settings.value("resources_folder", ""),
             self._on_service_logged,
         )
-        self.services_tab  = ServicesTab(self.db, lambda: self.unit,
-                                         lambda: self.settings.value("resources_folder", ""))
-        self.parts_tab     = PartsTab(self.db, lambda: self.settings.value("resources_folder", ""))
-        self.settings_tab  = SettingsTab(
+        self.services_tab = ServicesTab(self.db, lambda: self.unit,
+                                        lambda: self.settings.value("resources_folder", ""))
+        self.parts_tab = PartsTab(
+            self.db, lambda: self.settings.value("resources_folder", ""))
+        self.settings_tab = SettingsTab(
             self.db,
             self._apply_theme, self._apply_unit,
             lambda path: self.settings.setValue("resources_folder", path),
             current_theme=self.settings.value("theme", "dark"),
             current_unit=self.settings.value("unit", "km"),
-            current_resources_folder=self.settings.value("resources_folder", ""),
+            current_resources_folder=self.settings.value(
+                "resources_folder", ""),
         )
         self.tabs.addTab(self.garage_tab,    "Garage")
         self.tabs.addTab(self.schedule_tab,  "Schedule")
@@ -3496,7 +3627,8 @@ class VehicleApp(QMainWindow):
         self._update_status()
 
     def _apply_theme(self, theme: str):
-        QApplication.instance().setPalette(dark_palette() if theme == "dark" else light_palette())
+        QApplication.instance().setPalette(
+            dark_palette() if theme == "dark" else light_palette())
         self.settings.setValue("theme", theme)
         self.settings_tab.sync_theme(theme)
 
