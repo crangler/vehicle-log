@@ -8,3 +8,11 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Claude
+.claude/
+.claude/worktrees/agent-a4d9d2b302b4e6ac3
+
+
+# Database
+vehicles.db
