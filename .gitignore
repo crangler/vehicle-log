@@ -16,3 +16,6 @@ wheels/
 
 # Database
 vehicles.db
+
+# Planning documents
+docs/
