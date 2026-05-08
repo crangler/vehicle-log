@@ -19,3 +19,6 @@ vehicles.db
 
 # Planning documents
 docs/
+
+# Distribution files
+wehicle_log.dist
